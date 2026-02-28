@@ -1,11 +1,11 @@
-Texture2D    gDiffuseMap : register(t0);
-SamplerState gSampler    : register(s0);
+Texture2D gDiffuseMap : register(t0);
+SamplerState gSampler : register(s0);
 
 cbuffer ObjectCB : register(b0)
 {
     float4x4 gWorld;
     float4x4 gWorldViewProj;
-    float3 gEyePosW;   float _pad0;
+    float3 gEyePosW; float _pad0;
     float3 gLightDirW; float _pad1;
     float4 gUvOffsetTiling;
     float gSpecPower; float3 _pad2;
@@ -55,6 +55,6 @@ float4 PSMain(PSIn pin) : SV_TARGET
     float ndotl = saturate(dot(N, L));
     float spec = pow(saturate(dot(N, H)), gSpecPower);
 
-    float3 color = albedo*(0.2f + 0.8f * ndotl) + spec*0.25f;
+    float3 color = albedo*(0.5f + ndotl) + spec*0.25f;
     return float4(color, 1.f);
 }

@@ -19,7 +19,6 @@ using Microsoft::WRL::ComPtr;
 
 // ---------------------------------------------------------------------------
 // Path utilities
-// ---------------------------------------------------------------------------
 
 static std::string Dirname(const std::string& path)
 {
@@ -630,8 +629,8 @@ void D3D12Context::Draw(float dt)
 
     m_time += dt;
 
-    m_uvTiling = { 4.f, 4.f }; 
-    m_uvOffset.x = fmodf(m_time * 0.05f, 1.f);
+    m_uvTiling = { sin(m_time), sin(m_time) }; 
+    m_uvOffset.x = fmodf(m_time, 1.f);
 
     UpdateConstantBuffer();
 
