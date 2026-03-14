@@ -1423,7 +1423,7 @@ void RenderingSystem::UpdateLightConstants(float dt)
             const NBodyParticle& p = m_particles[idx];
             GpuLight& light = constants.Lights[lightIdx++];
             const float pulse = 0.85f + 0.15f * std::sinf(m_time * 1.4f + static_cast<float>(idx) * 0.63f);
-            light.PositionRange = XMFLOAT4(p.Position.x, p.Position.y, p.Position.z, 5.f);
+            light.PositionRange = XMFLOAT4(p.Position.x, p.Position.y, p.Position.z, 2.f);
             light.ColorIntensity = XMFLOAT4(p.Color.x, p.Color.y, p.Color.z, 1.2f * pulse);
             light.Params = XMFLOAT4(1.f, 0.f, 0.f, 0.f);
         }
@@ -1514,14 +1514,14 @@ void RenderingSystem::UpdateNBody(float dt)
 
     constexpr float G = 0.00045f;
     constexpr float Epsilon2 = 1.f; // softening
-    constexpr float MaxSpeed = 3.f;
+    constexpr float MaxSpeed = 2.6f;
     constexpr float Damping = 0.9985f;
-    constexpr float BoundX = 12.f;
+    constexpr float BoundX = 14.f;
     constexpr float BoundYMin = 0.5f;
-    constexpr float BoundYMax = 17.5f;
-    constexpr float BoundZ = 5.5f;
+    constexpr float BoundYMax = 14.5f;
+    constexpr float BoundZ = 6.5f;
     constexpr float BoundK = 0.8f;
-    
+
     dt = std::min(dt, 0.033f);
 
     const uint32_t N = NBodyCount;
@@ -1596,7 +1596,7 @@ void RenderingSystem::UpdateNBody(float dt)
         XMStoreFloat3(&bulbs[i].Position, pos);
         bulbs[i].Radius = 1.3f;
         bulbs[i].Color = m_particles[i].Color;
-        bulbs[i].Intensity = 1.f;
+        bulbs[i].Intensity = 1.1f;
     }
 }
 
