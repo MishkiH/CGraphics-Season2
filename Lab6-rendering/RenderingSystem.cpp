@@ -712,7 +712,6 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     UpdateLightConstants(0.f);
     BuildPSOs();
 
-    // ---- N-body simulation + billboard pipeline ----
     InitNBody();
     BuildBulbPipeline();
 
@@ -793,7 +792,7 @@ void RenderingSystem::Draw(float dt)
     if (!m_initialized)
         return;
 
-    UpdateNBody(dt);          // N-body physics + write bulb instance buffer
+    UpdateNBody(dt);
     UpdatePassConstants();
     UpdateLightConstants(dt);
 
@@ -852,10 +851,6 @@ void RenderingSystem::Draw(float dt)
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
 
-    // ----------------------------------------------------------------
-    //  Forward additive pass – render all NBodyCount billboard bulbs
-    //  (separate root signature, no descriptor heap needed)
-    // ----------------------------------------------------------------
     if (m_bulbPSO && m_bulbRootSignature && m_bulbInstanceBuffer)
     {
         m_gBuffer->TransitionDepthToRead(m_commandList.Get());
@@ -1420,7 +1415,6 @@ void RenderingSystem::UpdateLightConstants(float dt)
     {
         const uint32_t slots = MaxLights - 1;
         const uint32_t n = static_cast<uint32_t>(m_particles.size());
-        // fixed step across the full array → uniform spatial coverage, no flicker
         const float step = static_cast<float>(n) / static_cast<float>(slots);
 
         for (uint32_t i = 0; i < slots; ++i)
@@ -1441,8 +1435,6 @@ void RenderingSystem::UpdateLightConstants(float dt)
 
 void RenderingSystem::CreateSceneLights()
 {
-    // N-body simulation populates lights dynamically every frame in
-    // UpdateLightConstants().  Nothing to do here.
     m_sceneLights.clear();
 }
 
@@ -1498,7 +1490,6 @@ void RenderingSystem::InitNBody()
 
         p.Mass = 0.4f + pcg() * 1.6f;
 
-        // HSV→RGB with full saturation so each bulb has a distinct colour
         float hue = static_cast<float>(i) / static_cast<float>(NBodyCount);
         hue = std::fmodf(hue + pcg() * 0.07f, 1.f);
         const float h6 = hue * 6.f;
@@ -1522,15 +1513,15 @@ void RenderingSystem::UpdateNBody(float dt)
         return;
 
     constexpr float G = 0.00045f;
-    constexpr float Epsilon2 = 1.f; // softening – prevents singularities at close range
+    constexpr float Epsilon2 = 1.f; // softening
     constexpr float MaxSpeed = 3.f;
-    constexpr float Damping = 0.9985f; // bleeds excess energy each frame
+    constexpr float Damping = 0.9985f;
     constexpr float BoundX = 12.f;
     constexpr float BoundYMin = 0.5f;
     constexpr float BoundYMax = 17.5f;
     constexpr float BoundZ = 5.5f;
-    constexpr float BoundK = 0.8f; // boundary restoring stiffness
-
+    constexpr float BoundK = 0.8f;
+    
     dt = std::min(dt, 0.033f);
 
     const uint32_t N = NBodyCount;
