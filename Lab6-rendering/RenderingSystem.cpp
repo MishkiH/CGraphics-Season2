@@ -694,7 +694,7 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     m_scissorRect = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
 
     XMStoreFloat4x4(&m_world, XMMatrixScaling(0.01f, 0.01f, 0.01f));
-    SetCamera(m_eyePos, 1.f, 0.f);
+    SetCamera(m_eyePos, 20.f, 0.f);
 
     const float aspect = (m_height > 0) ? static_cast<float>(m_width) / static_cast<float>(m_height) : 1.f;
     XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(0.25f * XM_PI, aspect, 0.05f, 1000.f));
@@ -711,6 +711,10 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     UpdatePassConstants();
     UpdateLightConstants(0.f);
     BuildPSOs();
+
+    // ---- N-body simulation + billboard pipeline ----
+    InitNBody();
+    BuildBulbPipeline();
 
     m_initialized = true;
     return true;
@@ -731,6 +735,12 @@ void RenderingSystem::Shutdown()
     {
         m_lightConstantBuffer->Unmap(0, nullptr);
         m_mappedLightConstants = nullptr;
+    }
+
+    if (m_bulbInstanceBuffer && m_mappedBulbInstances)
+    {
+        m_bulbInstanceBuffer->Unmap(0, nullptr);
+        m_mappedBulbInstances = nullptr;
     }
 
     if (m_gBuffer)
@@ -783,6 +793,7 @@ void RenderingSystem::Draw(float dt)
     if (!m_initialized)
         return;
 
+    UpdateNBody(dt);          // N-body physics + write bulb instance buffer
     UpdatePassConstants();
     UpdateLightConstants(dt);
 
@@ -840,6 +851,29 @@ void RenderingSystem::Draw(float dt)
     m_commandList->SetGraphicsRootDescriptorTable(4, m_gBuffer->GetSrvTable());
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
+
+    // ----------------------------------------------------------------
+    //  Forward additive pass – render all NBodyCount billboard bulbs
+    //  (separate root signature, no descriptor heap needed)
+    // ----------------------------------------------------------------
+    if (m_bulbPSO && m_bulbRootSignature && m_bulbInstanceBuffer)
+    {
+        m_gBuffer->TransitionDepthToRead(m_commandList.Get());
+
+        auto dsvReadOnly = m_gBuffer->GetDsvReadOnly();
+        m_commandList->OMSetRenderTargets(1, &backBufferRtv, TRUE, &dsvReadOnly);
+
+        m_commandList->SetGraphicsRootSignature(m_bulbRootSignature.Get());
+        m_commandList->SetPipelineState(m_bulbPSO.Get());
+        m_commandList->SetGraphicsRootConstantBufferView(0, m_passConstantBuffer->GetGPUVirtualAddress());
+        m_commandList->SetGraphicsRootShaderResourceView(1, m_bulbInstanceBuffer->GetGPUVirtualAddress());
+        m_commandList->IASetVertexBuffers(0, 0, nullptr);
+        m_commandList->IASetIndexBuffer(nullptr);
+        m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        m_commandList->DrawInstanced(4, NBodyCount, 0, 0);
+
+        m_gBuffer->TransitionDepthToWrite(m_commandList.Get());
+    }
 
     D3D12_RESOURCE_BARRIER toPresent = toRenderTarget;
     toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1370,86 +1404,46 @@ void RenderingSystem::UpdateLightConstants(float dt)
     LightConstants constants{};
     constants.AmbientColor = XMFLOAT4(0.055f, 0.055f, 0.06f, 1.f);
 
-    const uint32_t lightCount = static_cast<uint32_t>(std::min<size_t>(m_sceneLights.size(), MaxLights));
-    constants.LightCount = XMFLOAT4(static_cast<float>(lightCount), 0.f, 0.f, 0.f);
+    uint32_t lightIdx = 0;
 
-    for (uint32_t i = 0; i < lightCount; ++i)
+    // directional sky fill
     {
-        GpuLight light = m_sceneLights[i];
-        const float type = light.Params.x;
-        if (type > 0.5f)
-        {
-            const float pulse = 0.9f + 0.1f * std::sinf(m_time * 1.35f + static_cast<float>(i) * 0.75f);
-            light.ColorIntensity.w *= pulse;
-        }
-        constants.Lights[i] = light;
+        GpuLight& dir = constants.Lights[lightIdx++];
+        const XMFLOAT3 rawDir(0.4f, -1.f, 0.3f);
+        const float len = sqrtf(rawDir.x*rawDir.x + rawDir.y*rawDir.y + rawDir.z*rawDir.z);
+        dir.DirectionSpot = XMFLOAT4(rawDir.x/len, rawDir.y/len, rawDir.z/len, 0.f);
+        dir.ColorIntensity = XMFLOAT4(0.6f, 0.6f, 1.0f, 0.6f);
+        dir.Params = XMFLOAT4(0.f, 0.f, 0.f, 0.f);
     }
 
+    if (!m_particles.empty())
+    {
+        const uint32_t slots = MaxLights - 1;
+        const uint32_t n = static_cast<uint32_t>(m_particles.size());
+        // fixed step across the full array → uniform spatial coverage, no flicker
+        const float step = static_cast<float>(n) / static_cast<float>(slots);
+
+        for (uint32_t i = 0; i < slots; ++i)
+        {
+            const uint32_t idx = static_cast<uint32_t>(i * step) % n;
+            const NBodyParticle& p = m_particles[idx];
+            GpuLight& light = constants.Lights[lightIdx++];
+            const float pulse = 0.85f + 0.15f * std::sinf(m_time * 1.4f + static_cast<float>(idx) * 0.63f);
+            light.PositionRange = XMFLOAT4(p.Position.x, p.Position.y, p.Position.z, 5.f);
+            light.ColorIntensity = XMFLOAT4(p.Color.x, p.Color.y, p.Color.z, 1.2f * pulse);
+            light.Params = XMFLOAT4(1.f, 0.f, 0.f, 0.f);
+        }
+    }
+
+    constants.LightCount = XMFLOAT4(static_cast<float>(lightIdx), 0.f, 0.f, 0.f);
     std::memcpy(m_mappedLightConstants, &constants, sizeof(constants));
 }
 
 void RenderingSystem::CreateSceneLights()
 {
-    auto normalize = [](const XMFLOAT3& v) -> XMFLOAT3
-    {
-        XMFLOAT3 out{};
-        XMStoreFloat3(&out, XMVector3Normalize(XMLoadFloat3(&v)));
-        return out;
-    };
-
-    auto makeDirectional = [&](const XMFLOAT3& direction, const XMFLOAT3& color, float intensity) -> GpuLight
-    {
-        GpuLight light{};
-        const XMFLOAT3 dir = normalize(direction);
-        light.DirectionSpot = XMFLOAT4(dir.x, dir.y, dir.z, 0.f);
-        light.ColorIntensity = XMFLOAT4(color.x, color.y, color.z, intensity);
-        light.Params = XMFLOAT4(0.f, 0.f, 0.f, 0.f);
-        return light;
-    };
-
-    auto makePoint = [&](const XMFLOAT3& position, const XMFLOAT3& color, float intensity, float range) -> GpuLight
-    {
-        GpuLight light{};
-        light.PositionRange = XMFLOAT4(position.x, position.y, position.z, range);
-        light.ColorIntensity = XMFLOAT4(color.x, color.y, color.z, intensity);
-        light.Params = XMFLOAT4(1.f, 0.f, 0.f, 0.f);
-        return light;
-    };
-
-    auto makeSpot = [&](const XMFLOAT3& position, const XMFLOAT3& direction, const XMFLOAT3& color, float intensity, float range, float innerAngleDeg, float outerAngleDeg) -> GpuLight
-    {
-        GpuLight light{};
-        const XMFLOAT3 dir = normalize(direction);
-        const float innerAngle = XMConvertToRadians(innerAngleDeg);
-        const float outerAngle = XMConvertToRadians(outerAngleDeg);
-
-        light.PositionRange = XMFLOAT4(position.x, position.y, position.z, range);
-        light.DirectionSpot = XMFLOAT4(dir.x, dir.y, dir.z, std::cos(outerAngle));
-        light.ColorIntensity = XMFLOAT4(color.x, color.y, color.z, intensity);
-        light.Params = XMFLOAT4(2.f, std::cos(innerAngle), 0.f, 0.f);
-        return light;
-    };
-
+    // N-body simulation populates lights dynamically every frame in
+    // UpdateLightConstants().  Nothing to do here.
     m_sceneLights.clear();
-
-    // Directional сини
-    m_sceneLights.push_back(makeDirectional(
-        XMFLOAT3(0.4f, -1.f, 0.3f),
-        XMFLOAT3(0.6f, 0.6f, 1.0f),
-        2.f));
-
-    // point красни
-    m_sceneLights.push_back(makePoint(
-        XMFLOAT3(11.0f, 2.0f, -0.3f),
-        XMFLOAT3(1.0f, 0.1f, 0.1f),
-        3.5f, 4.5f));
-
-    // зелёный spot 
-    m_sceneLights.push_back(makeSpot(
-        XMFLOAT3(-10.f, 16.3f, -0.4f),
-        XMFLOAT3(0.6f, -1.0f, 0.f),
-        XMFLOAT3(0.2f, 1.0f, 0.2f),
-        7.0f, 19.0f, 7.0f, 19.0f));
 }
 
 void RenderingSystem::FlushCommandQueue()
@@ -1473,4 +1467,285 @@ D3D12_CPU_DESCRIPTOR_HANDLE RenderingSystem::CurrentBackBufferRTV() const
 ID3D12Resource* RenderingSystem::CurrentBackBuffer() const
 {
     return m_backBuffers[m_backBufferIndex].Get();
+}
+
+void RenderingSystem::InitNBody()
+{
+    m_particles.resize(NBodyCount);
+
+    uint32_t seed = 0xDEADBEEFu;
+    auto pcg = [&]() -> float
+    {
+        seed = seed * 747796405u + 2891336453u;
+        uint32_t w = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+        w = (w >> 22u) ^ w;
+        return static_cast<float>(w >> 8) / static_cast<float>(1u << 24);
+    };
+
+    for (uint32_t i = 0; i < NBodyCount; ++i)
+    {
+        NBodyParticle& p = m_particles[i];
+
+        p.Position = XMFLOAT3(
+            (pcg() * 2.f - 1.f) * 13.f,
+            pcg() * 18.f,
+            (pcg() * 2.f - 1.f) * 6.f);
+
+        p.Velocity = XMFLOAT3(
+            (pcg() - 0.5f) * 0.6f,
+            (pcg() - 0.5f) * 0.6f,
+            (pcg() - 0.5f) * 0.6f);
+
+        p.Mass = 0.4f + pcg() * 1.6f;
+
+        // HSV→RGB with full saturation so each bulb has a distinct colour
+        float hue = static_cast<float>(i) / static_cast<float>(NBodyCount);
+        hue = std::fmodf(hue + pcg() * 0.07f, 1.f);
+        const float h6 = hue * 6.f;
+        const int hi = static_cast<int>(h6) % 6;
+        const float f = h6 - std::floorf(h6);
+        switch (hi)
+        {
+            case 0:  p.Color = XMFLOAT3(1.f, f, 0.f); break;
+            case 1:  p.Color = XMFLOAT3(1.f-f, 1.f, 0.f); break;
+            case 2:  p.Color = XMFLOAT3(0.f, 1.f, f); break;
+            case 3:  p.Color = XMFLOAT3(0.f, 1.f-f, 1.f); break;
+            case 4:  p.Color = XMFLOAT3(f, 0.f, 1.f); break;
+            default: p.Color = XMFLOAT3(1.f, 0.f, 1.f-f); break;
+        }
+    }
+}
+
+void RenderingSystem::UpdateNBody(float dt)
+{
+    if (m_particles.empty() || !m_mappedBulbInstances)
+        return;
+
+    constexpr float G = 0.00045f;
+    constexpr float Epsilon2 = 1.f; // softening – prevents singularities at close range
+    constexpr float MaxSpeed = 3.f;
+    constexpr float Damping = 0.9985f; // bleeds excess energy each frame
+    constexpr float BoundX = 12.f;
+    constexpr float BoundYMin = 0.5f;
+    constexpr float BoundYMax = 17.5f;
+    constexpr float BoundZ = 5.5f;
+    constexpr float BoundK = 0.8f; // boundary restoring stiffness
+
+    dt = std::min(dt, 0.033f);
+
+    const uint32_t N = NBodyCount;
+    std::vector<XMFLOAT3> accel(N, XMFLOAT3(0.f, 0.f, 0.f));
+
+    for (uint32_t i = 0; i < N; ++i)
+    {
+        const XMVECTOR pi = XMLoadFloat3(&m_particles[i].Position);
+        const float mi = m_particles[i].Mass;
+
+        for (uint32_t j = i + 1; j < N; ++j)
+        {
+            const XMVECTOR rij = XMVectorSubtract(XMLoadFloat3(&m_particles[j].Position), pi);
+
+            float dist2;
+            XMStoreFloat(&dist2, XMVector3Dot(rij, rij));
+            dist2 += Epsilon2;
+
+            const float invDist = 1.f / std::sqrtf(dist2);
+            const float invDist3 = invDist / dist2;
+            const XMVECTOR fij = XMVectorScale(rij, invDist3);
+
+            XMStoreFloat3(&accel[i],
+                XMVectorAdd(XMLoadFloat3(&accel[i]),
+                    XMVectorScale(fij, G * m_particles[j].Mass)));
+
+            XMStoreFloat3(&accel[j],
+                XMVectorSubtract(XMLoadFloat3(&accel[j]),
+                    XMVectorScale(fij, G * mi)));
+        }
+    }
+
+    auto* bulbs = reinterpret_cast<BulbInstance*>(m_mappedBulbInstances);
+
+    for (uint32_t i = 0; i < N; ++i)
+    {
+        XMVECTOR pos = XMLoadFloat3(&m_particles[i].Position);
+        XMVECTOR vel = XMLoadFloat3(&m_particles[i].Velocity);
+        XMVECTOR acc = XMLoadFloat3(&accel[i]);
+
+        {
+            XMFLOAT3 pos3, acc3;
+            XMStoreFloat3(&pos3, pos);
+            XMStoreFloat3(&acc3, acc);
+
+            auto pushBack = [&](float val, float lo, float hi, float& accComp)
+            {
+                if (val < lo) accComp += (lo - val) * BoundK;
+                else if (val > hi) accComp -= (val - hi) * BoundK;
+            };
+
+            pushBack(pos3.x, -BoundX, BoundX, acc3.x);
+            pushBack(pos3.y, BoundYMin, BoundYMax, acc3.y);
+            pushBack(pos3.z, -BoundZ, BoundZ, acc3.z);
+
+            acc = XMLoadFloat3(&acc3);
+        }
+
+        vel = XMVectorAdd(vel, XMVectorScale(acc, dt));
+        vel = XMVectorScale(vel, Damping);
+
+        float speed;
+        XMStoreFloat(&speed, XMVector3Length(vel));
+        if (speed > MaxSpeed)
+            vel = XMVectorScale(vel, MaxSpeed / speed);
+
+        pos = XMVectorAdd(pos, XMVectorScale(vel, dt));
+
+        XMStoreFloat3(&m_particles[i].Position, pos);
+        XMStoreFloat3(&m_particles[i].Velocity, vel);
+
+        XMStoreFloat3(&bulbs[i].Position, pos);
+        bulbs[i].Radius = 1.3f;
+        bulbs[i].Color = m_particles[i].Color;
+        bulbs[i].Intensity = 1.f;
+    }
+}
+
+bool RenderingSystem::BuildBulbPipeline()
+{
+    const UINT64 bufSize = static_cast<UINT64>(NBodyCount) * sizeof(BulbInstance);
+
+    D3D12_HEAP_PROPERTIES uploadProps{};
+    uploadProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    uploadProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    uploadProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    uploadProps.CreationNodeMask = 1;
+    uploadProps.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC bufDesc{};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = bufSize;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ThrowIfFailed(
+        m_device->CreateCommittedResource(
+            &uploadProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&m_bulbInstanceBuffer)),
+        "Create bulb instance buffer");
+
+    D3D12_RANGE readRange{ 0, 0 };
+    ThrowIfFailed(
+        m_bulbInstanceBuffer->Map(0, &readRange,
+            reinterpret_cast<void**>(&m_mappedBulbInstances)),
+        "Map bulb instance buffer");
+
+    UINT compileFlags = 0;
+#if defined(_DEBUG)
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    ComPtr<ID3DBlob> errors;
+    const std::wstring shaderPath = ToWide(ResolveAssetPath("Shaders.hlsl"));
+
+    auto compileFromFile = [&](const char* entry, const char* target, ComPtr<ID3DBlob>& blob)
+    {
+        errors.Reset();
+        const HRESULT hr = D3DCompileFromFile(
+            shaderPath.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+            entry, target, compileFlags, 0, &blob, &errors);
+        if (FAILED(hr))
+        {
+            if (errors)
+                throw std::runtime_error(static_cast<const char*>(errors->GetBufferPointer()));
+            ThrowIfFailed(hr, entry);
+        }
+    };
+
+    compileFromFile("BulbVS", "vs_5_1", m_bulbVS);
+    compileFromFile("BulbPS", "ps_5_1", m_bulbPS);
+
+    // root SRV (slot 1) lets us bind the structured buffer without a descriptor heap
+    D3D12_ROOT_PARAMETER rp[2]{};
+    rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rp[0].Descriptor.ShaderRegister = 0;
+    rp[0].Descriptor.RegisterSpace = 0;
+    rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    rp[1].Descriptor.ShaderRegister = 0;
+    rp[1].Descriptor.RegisterSpace = 0;
+    rp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc{};
+    rsDesc.NumParameters = 2;
+    rsDesc.pParameters = rp;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    ComPtr<ID3DBlob> serialized;
+    errors.Reset();
+    const HRESULT hrRS = D3D12SerializeRootSignature(
+        &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &errors);
+    if (FAILED(hrRS))
+    {
+        if (errors)
+            throw std::runtime_error(static_cast<const char*>(errors->GetBufferPointer()));
+        ThrowIfFailed(hrRS, "Serialize bulb root signature");
+    }
+
+    ThrowIfFailed(
+        m_device->CreateRootSignature(0,
+            serialized->GetBufferPointer(), serialized->GetBufferSize(),
+            IID_PPV_ARGS(&m_bulbRootSignature)),
+        "Create bulb root signature");
+
+    D3D12_RENDER_TARGET_BLEND_DESC addBlend{};
+    addBlend.BlendEnable = TRUE;
+    addBlend.SrcBlend = D3D12_BLEND_ONE;
+    addBlend.DestBlend = D3D12_BLEND_ONE;
+    addBlend.BlendOp = D3D12_BLEND_OP_ADD;
+    addBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    addBlend.DestBlendAlpha = D3D12_BLEND_ONE;
+    addBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    addBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_BLEND_DESC blendDesc{};
+    blendDesc.RenderTarget[0] = addBlend;
+
+    D3D12_RASTERIZER_DESC rasterDesc{};
+    rasterDesc.FillMode = D3D12_FILL_MODE_SOLID;
+    rasterDesc.CullMode = D3D12_CULL_MODE_NONE;
+    rasterDesc.FrontCounterClockwise = FALSE;
+    rasterDesc.DepthClipEnable = FALSE;
+    rasterDesc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    D3D12_DEPTH_STENCIL_DESC dsDesc{};
+    dsDesc.DepthEnable = TRUE;
+    dsDesc.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; // read-only
+    dsDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    dsDesc.StencilEnable = FALSE;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+    psoDesc.pRootSignature = m_bulbRootSignature.Get();
+    psoDesc.VS = { m_bulbVS->GetBufferPointer(), m_bulbVS->GetBufferSize() };
+    psoDesc.PS = { m_bulbPS->GetBufferPointer(), m_bulbPS->GetBufferSize() };
+    psoDesc.BlendState = blendDesc;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.RasterizerState = rasterDesc;
+    psoDesc.DepthStencilState = dsDesc;
+    psoDesc.InputLayout = { nullptr, 0 };
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    psoDesc.SampleDesc.Count = 1;
+
+    ThrowIfFailed(
+        m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_bulbPSO)),
+        "Create bulb PSO");
+
+    return true;
 }

@@ -1,35 +1,21 @@
-// ============================================================
-//  PassCB – register b0 (ALL stages)
-//  Matches C++ PassConstants (matrices are pre-transposed on CPU)
-// ============================================================
 cbuffer PassCB : register(b0)
 {
-    float4x4 gWorld;        // Object-to-world
-    float4x4 gViewProj;     // View × Projection
-    float4x4 gInvViewProj;  // Inverse of ViewProj
-    float4   gEyePosW;      // xyz = eye world position
-    float4   gRTSize;       // x=width, y=height, z=1/width, w=1/height
+    float4x4 gWorld;
+    float4x4 gViewProj;
+    float4x4 gInvViewProj;
+    float4   gEyePosW;
+    float4   gRTSize;
 };
 
-// ============================================================
-//  MaterialCB – register b2, 8 × 32-bit root constants
-//  Matches C++ MaterialConstants
-// ============================================================
 cbuffer MaterialCB : register(b2)
 {
-    float4 gBaseColor;      // rgb = diffuse tint,  a unused
-    float4 gSurfaceParams;  // x = specular intensity, y = shininess
+    float4 gBaseColor;
+    float4 gSurfaceParams;
 };
 
-// ============================================================
-//  Diffuse texture – t0 (geometry pass only)
-// ============================================================
-Texture2D    gDiffuseMap : register(t0);
+Texture2D gDiffuseMap : register(t0);
 SamplerState gSampler : register(s0);
 
-// ============================================================
-//  GEOMETRY PASS
-// ============================================================
 struct VSIn
 {
     float3 PosL : POSITION;
@@ -56,15 +42,11 @@ GeoVSOut GeometryVS(VSIn vin)
     return vout;
 }
 
-// GBuffer layout (must match GBuffer.cpp and BuildPSOs):
-//   SV_Target0  RGBA8    – albedo (rgb) + specular intensity (a)
-//   SV_Target1  RGBA16F  – world-space normal (xyz) + shininess (a)
-//   SV_Target2  R32F     – NDC depth (z/w), cleared to 1.0
 struct GBufferOut
 {
     float4 AlbedoSpec : SV_Target0;
     float4 Normal : SV_Target1;
-    float  Depth : SV_Target2;
+    float Depth : SV_Target2;
 };
 
 GBufferOut GeometryPS(GeoVSOut pin)
@@ -72,8 +54,8 @@ GBufferOut GeometryPS(GeoVSOut pin)
     GBufferOut gout;
 
     float3 albedo = gDiffuseMap.Sample(gSampler, pin.TexC).rgb * gBaseColor.rgb;
-    float  specInt = gSurfaceParams.x;
-    float  shiny = gSurfaceParams.y;
+    float specInt = gSurfaceParams.x;
+    float shiny = gSurfaceParams.y;
 
     gout.AlbedoSpec = float4(albedo, specInt);
     gout.Normal = float4(normalize(pin.NormalW), shiny);
@@ -81,36 +63,29 @@ GBufferOut GeometryPS(GeoVSOut pin)
     return gout;
 }
 
-
-// ============================================================
-//  LightCB – register b1
-//  Matches C++ LightConstants + GpuLight
-// ============================================================
 struct GpuLight
 {
-    float4 PositionRange;   // xyz = position,  w = range
-    float4 DirectionSpot;   // xyz = direction, w = cos(outerAngle)
-    float4 ColorIntensity;  // rgb = color,     a = intensity
-    float4 Params;          // x = type (0=dir, 1=point, 2=spot), y = cos(innerAngle)
+    float4 PositionRange;
+    float4 DirectionSpot;
+    float4 ColorIntensity;
+    float4 Params;
 };
 
-#define MAX_LIGHTS 32
+#define MAX_LIGHTS 128
 
 cbuffer LightCB : register(b1)
 {
-    float4   gAmbientColor;         // rgb = ambient, a unused
-    float4   gLightCount;           // x = number of active lights
+    float4   gAmbientColor;
+    float4   gLightCount;
     GpuLight gLights[MAX_LIGHTS];
 };
 
-// GBuffer textures – t1..t3 (root sig uses BaseShaderRegister = 1)
+
 Texture2D gAlbedoSpecTex : register(t1);
 Texture2D gNormalTex : register(t2);
 Texture2D gDepthTex : register(t3);
 
-// ============================================================
-//  LIGHTING PASS – full-screen triangle, no vertex buffer
-// ============================================================
+
 struct QuadVSOut
 {
     float4 PosH : SV_POSITION;
@@ -120,16 +95,13 @@ struct QuadVSOut
 QuadVSOut LightingVS(uint id : SV_VertexID)
 {
     QuadVSOut vout;
-    // Generate clip-space triangle covering the whole screen
     vout.TexC = float2((id << 1) & 2, id & 2);
     vout.PosH = float4(vout.TexC * float2(2.f, -2.f) + float2(-1.f, 1.f), 0.f, 1.f);
     return vout;
 }
 
-// Reconstruct world-space position from NDC depth + pixel UV
 float3 ReconstructWorldPos(float2 uv, float ndcDepth)
 {
-    // uv in [0,1], convert to NDC xy
     float4 clipPos = float4(uv * float2(2.f, -2.f) + float2(-1.f, 1.f),
                             ndcDepth, 1.f);
     float4 worldPos = mul(clipPos, gInvViewProj);
@@ -147,11 +119,11 @@ float4 LightingPS(QuadVSOut pin) : SV_TARGET
     float4 normalSample = gNormalTex.Load(coords);
     float3 N = normalize(normalSample.xyz);
     float  shininess = normalSample.a;
-    shininess = max(shininess, 1.f);  // avoid pow(x,0)
+    shininess = max(shininess, 1.f);
 
     float  ndcDepth = gDepthTex.Load(coords).r;
 
-    // Skip background pixels (depth == 1 means nothing was written)
+
     if (ndcDepth >= 1.f)
         return float4(0.f, 0.f, 0.f, 1.f);
 
@@ -159,62 +131,123 @@ float4 LightingPS(QuadVSOut pin) : SV_TARGET
     float3 posW = ReconstructWorldPos(uv, ndcDepth);
     float3 V = normalize(gEyePosW.xyz - posW);
 
-    // Ambient
     float3 finalColor = gAmbientColor.rgb * albedo;
 
     int lightCount = (int)gLightCount.x;
     for (int i = 0; i < lightCount; ++i)
     {
         GpuLight light = gLights[i];
-        float  type = light.Params.x;
+        float type = light.Params.x;
         float3 lightColor = light.ColorIntensity.rgb;
-        float  intensity = light.ColorIntensity.a;
+        float intensity = light.ColorIntensity.a;
         float3 L;
-        float  attenuation = 1.f;
+        float attenuation = 1.f;
 
         if (type < 0.5f)
         {
-            // ---- Directional ----
             L = normalize(-light.DirectionSpot.xyz);
         }
         else if (type < 1.5f)
         {
-            // ---- Point ----
             float3 toLight = light.PositionRange.xyz - posW;
-            float  dist = length(toLight);
-            float  range = light.PositionRange.w;
+            float dist = length(toLight);
+            float range = light.PositionRange.w;
             if (dist >= range) continue;
             L = toLight / dist;
             float t = dist / range;
-            attenuation = saturate(1.f - t * t);   // smooth inverse-square falloff
+            attenuation = saturate(1.f - t * t);
         }
         else
         {
-            // ---- Spot ----
             float3 toLight = light.PositionRange.xyz - posW;
-            float  dist = length(toLight);
-            float  range = light.PositionRange.w;
+            float dist = length(toLight);
+            float range = light.PositionRange.w;
             if (dist >= range) continue;
             L = toLight / dist;
 
-            float  cosOuter = light.DirectionSpot.w;
-            float  cosInner = light.Params.y;
-            float  cosAngle = dot(-L, normalize(light.DirectionSpot.xyz));
+            float cosOuter = light.DirectionSpot.w;
+            float cosInner = light.Params.y;
+            float cosAngle = dot(-L, normalize(light.DirectionSpot.xyz));
             if (cosAngle <= cosOuter) continue;
 
-            float  denom = max(cosInner - cosOuter, 1e-4f);
-            float  spotFactor = saturate((cosAngle - cosOuter) / denom);
-            float  t = dist / range;
+            float denom = max(cosInner - cosOuter, 1e-4f);
+            float spotFactor = saturate((cosAngle - cosOuter) / denom);
+            float t = dist / range;
             attenuation = saturate(1.f - t * t) * spotFactor;
         }
 
-        float  NdotL = max(dot(N, L), 0.f);
+        float NdotL = max(dot(N, L), 0.f);
         float3 H = normalize(L + V);
-        float  NdotH = max(dot(N, H), 0.f);
-        float  spec = specInt * pow(NdotH, shininess);
+        float NdotH = max(dot(N, H), 0.f);
+        float spec = specInt * pow(NdotH, shininess);
 
         finalColor += (albedo * NdotL + spec) * lightColor * intensity * attenuation;
     }
 
     return float4(finalColor, 1.f);
+}
+
+// =============================================================================
+//  Bulb billboard pass  (forward additive, instanced triangle strip)
+// =============================================================================
+struct BulbInstance
+{
+    float3 Position;
+    float  Radius;
+    float3 Color;
+    float  Intensity;
+};
+StructuredBuffer<BulbInstance> gBulbs : register(t0);
+
+struct BulbVSOut
+{
+    float4 PosH  : SV_Position;
+    float3 Color : COLOR;
+    float2 UV    : TEXCOORD0;
+};
+
+static const float2 kCorners[4] =
+{
+    float2(-1.f, +1.f),
+    float2(+1.f, +1.f),
+    float2(-1.f, -1.f),
+    float2(+1.f, -1.f)
+};
+
+BulbVSOut BulbVS(uint vid : SV_VertexID, uint iid : SV_InstanceID)
+{
+    BulbInstance inst = gBulbs[iid];
+
+    float4 clipCenter = mul(float4(inst.Position, 1.f), gViewProj);
+
+    BulbVSOut output;
+    if (clipCenter.w <= 0.001f)
+    {
+        output.PosH  = float4(2.f, 2.f, 2.f, 1.f);
+        output.Color = float3(0.f, 0.f, 0.f);
+        output.UV    = float2(0.f, 0.f);
+        return output;
+    }
+
+    float2 corner = kCorners[vid];
+    float  scale  = inst.Radius / clipCenter.w;
+    clipCenter.x += corner.x * scale * gRTSize.y * gRTSize.z; // aspect correction
+    clipCenter.y += corner.y * scale;
+
+    output.PosH  = clipCenter;
+    output.Color = inst.Color * inst.Intensity;
+    output.UV    = corner;
+    return output;
+}
+
+float4 BulbPS(BulbVSOut input) : SV_Target
+{
+    float d2 = dot(input.UV, input.UV);
+    if (d2 > 1.f) discard;
+
+    float core = exp(-d2 * 5.f);
+    float halo = exp(-d2 * 1.8f) * 0.35f;
+    float glow = saturate(core + halo);
+
+    return float4(input.Color * glow, glow);
 }

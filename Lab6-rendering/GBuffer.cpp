@@ -65,10 +65,12 @@ bool GBuffer::Initialize(ID3D12Device* device, uint32_t width, uint32_t height)
     ThrowIfFailed(device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)), "Create GBuffer SRV heap");
 
     D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc{};
-    dsvHeapDesc.NumDescriptors = 1;
+    dsvHeapDesc.NumDescriptors = 2; // 0 = normal, 1 = read-only
     dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     ThrowIfFailed(device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_dsvHeap)), "Create GBuffer DSV heap");
+
+    m_dsvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
     CreateResources(device);
     return true;
@@ -83,6 +85,7 @@ void GBuffer::Shutdown()
     m_width = 0;
     m_height = 0;
     m_isWriteState = false;
+    m_isDepthWriteState = true;
 }
 
 void GBuffer::Resize(ID3D12Device* device, uint32_t width, uint32_t height)
@@ -113,6 +116,34 @@ void GBuffer::TransitionToWrite(ID3D12GraphicsCommandList* cmdList)
 
     cmdList->ResourceBarrier(TargetCount, barriers);
     m_isWriteState = true;
+}
+
+void GBuffer::TransitionDepthToRead(ID3D12GraphicsCommandList* cmdList)
+{
+    if (!m_isDepthWriteState)
+        return;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = m_depthStencil.Get();
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_READ;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &b);
+    m_isDepthWriteState = false;
+}
+
+void GBuffer::TransitionDepthToWrite(ID3D12GraphicsCommandList* cmdList)
+{
+    if (m_isDepthWriteState)
+        return;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = m_depthStencil.Get();
+    b.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_READ;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &b);
+    m_isDepthWriteState = true;
 }
 
 void GBuffer::TransitionToRead(ID3D12GraphicsCommandList* cmdList)
@@ -227,6 +258,11 @@ void GBuffer::CreateResources(ID3D12Device* device)
     dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
     device->CreateDepthStencilView(m_depthStencil.Get(), &dsvDesc, m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    dsvDesc.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvReadOnly = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+    dsvReadOnly.ptr += m_dsvDescriptorSize;
+    device->CreateDepthStencilView(m_depthStencil.Get(), &dsvDesc, dsvReadOnly);
 
     auto srvHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
     const uint32_t srvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);

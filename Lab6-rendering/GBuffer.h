@@ -15,11 +15,19 @@ public:
 
     void TransitionToWrite(ID3D12GraphicsCommandList* cmdList);
     void TransitionToRead(ID3D12GraphicsCommandList* cmdList);
+    void TransitionDepthToRead(ID3D12GraphicsCommandList* cmdList);
+    void TransitionDepthToWrite(ID3D12GraphicsCommandList* cmdList);
     void BindForGeometryPass(ID3D12GraphicsCommandList* cmdList);
 
     ID3D12DescriptorHeap* GetSrvHeap() const { return m_srvHeap.Get(); }
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvTable() const { return m_srvHeap->GetGPUDescriptorHandleForHeapStart(); }
     D3D12_CPU_DESCRIPTOR_HANDLE GetDsv() const { return m_dsvHeap->GetCPUDescriptorHandleForHeapStart(); }
+    D3D12_CPU_DESCRIPTOR_HANDLE GetDsvReadOnly() const
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += m_dsvDescriptorSize;
+        return h;
+    }
 
     DXGI_FORMAT GetAlbedoSpecFormat() const { return DXGI_FORMAT_R8G8B8A8_UNORM; }
     DXGI_FORMAT GetNormalFormat() const { return DXGI_FORMAT_R16G16B16A16_FLOAT; }
@@ -34,8 +42,9 @@ private:
     uint32_t m_width = 0;
     uint32_t m_height = 0;
     uint32_t m_rtvDescriptorSize = 0;
-
+    uint32_t m_dsvDescriptorSize = 0;
     bool m_isWriteState = false;
+    bool m_isDepthWriteState = true;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_targets[TargetCount];
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthStencil;
