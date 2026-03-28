@@ -92,6 +92,7 @@ private:
     bool BuildRootSignature();
     bool BuildPSOs();
     bool BuildGeometry();
+    bool BuildWaterGeometry();
     bool BuildFrameResources();
 
     void UpdatePassConstants();
@@ -136,12 +137,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_geometryPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_waterPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_geometryVS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_geometryPS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_hullShader;
     Microsoft::WRL::ComPtr<ID3DBlob> m_domainShader;
     Microsoft::WRL::ComPtr<ID3DBlob> m_lightingVS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_lightingPS;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_waterVS;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_waterHS;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_waterDS;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_waterPS;
 
     D3D12_INPUT_ELEMENT_DESC m_inputLayout[4]{};
 
@@ -149,6 +155,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_indexBuffer;
     D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView{};
     D3D12_INDEX_BUFFER_VIEW m_indexBufferView{};
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_waterVertexBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_waterIndexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW m_waterVBV{};
+    D3D12_INDEX_BUFFER_VIEW m_waterIBV{};
+    uint32_t m_waterIndexCount = 0;
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_diffuseTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_normalTextures;

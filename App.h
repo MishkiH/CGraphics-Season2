@@ -37,7 +37,7 @@ private:
 
     float m_camYaw = 1.f;
     float m_camPitch = 0.f;
-    DirectX::XMFLOAT3 m_camPos{ -7.f, 4.f, -7.f };
+    DirectX::XMFLOAT3 m_camPos{ -24.f, 8.f, -24.f };
 
     POINT m_savedCursorPos{ 0, 0 };
     bool m_justEnteredRmbLook = false;

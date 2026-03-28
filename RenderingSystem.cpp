@@ -533,6 +533,7 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     BuildShaders();
     BuildRootSignature();
     BuildGeometry();
+    BuildWaterGeometry();
     BuildFrameResources();
 
     m_gBuffer = std::make_unique<GBuffer>();
@@ -648,6 +649,33 @@ void RenderingSystem::Draw(float dt)
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
 
+    // Water forward pass (alpha blended, tessellated, depth test read-only)
+    {
+        const auto bbRtv2 = CurrentBackBufferRTV();
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvRO = m_gBuffer->GetDsvReadOnly();
+        m_commandList->OMSetRenderTargets(1, &bbRtv2, FALSE, &dsvRO);
+
+        m_commandList->SetPipelineState(m_waterPSO.Get());
+        m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+        m_commandList->SetGraphicsRootConstantBufferView(0, m_passConstantBuffer->GetGPUVirtualAddress());
+
+        ID3D12DescriptorHeap* waterHeaps[] = {m_textureHeap.Get()};
+        m_commandList->SetDescriptorHeaps(1, waterHeaps);
+
+        auto texBase2 = m_textureHeap->GetGPUDescriptorHandleForHeapStart();
+        m_commandList->SetGraphicsRootDescriptorTable(1, texBase2);
+        m_commandList->SetGraphicsRootDescriptorTable(5, texBase2);
+        m_commandList->SetGraphicsRootDescriptorTable(6, texBase2);
+
+        float dummyMat[8] = {1,1,1,1, 0.18f,32.f,0,0};
+        m_commandList->SetGraphicsRoot32BitConstants(2, 8, dummyMat, 0);
+
+        m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+        m_commandList->IASetVertexBuffers(0, 1, &m_waterVBV);
+        m_commandList->IASetIndexBuffer(&m_waterIBV);
+        m_commandList->DrawIndexedInstanced(m_waterIndexCount, 1, 0, 0, 0);
+    }
+
     m_gBuffer->TransitionDepthToWrite(m_commandList.Get());
 
     D3D12_RESOURCE_BARRIER toPresent = toRT;
@@ -759,6 +787,10 @@ bool RenderingSystem::BuildShaders()
     compile("GeometryPS", "ps_5_0", m_geometryPS);
     compile("LightingVS", "vs_5_0", m_lightingVS);
     compile("LightingPS", "ps_5_0", m_lightingPS);
+    compile("WaterVS",    "vs_5_0", m_waterVS);
+    compile("WaterHS",    "hs_5_0", m_waterHS);
+    compile("WaterDS",    "ds_5_0", m_waterDS);
+    compile("WaterPS",    "ps_5_0", m_waterPS);
 
     m_inputLayout[0] = {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
     m_inputLayout[1] = {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0};
@@ -915,6 +947,43 @@ bool RenderingSystem::BuildPSOs()
     litPso.DSVFormat = DXGI_FORMAT_UNKNOWN;
     litPso.SampleDesc = {1, 0};
     ThrowIfFailed(m_device->CreateGraphicsPipelineState(&litPso, IID_PPV_ARGS(&m_lightingPSO)), "Lighting PSO");
+
+    D3D12_RENDER_TARGET_BLEND_DESC waterBlendRt{};
+    waterBlendRt.BlendEnable = TRUE;
+    waterBlendRt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    waterBlendRt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    waterBlendRt.BlendOp = D3D12_BLEND_OP_ADD;
+    waterBlendRt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    waterBlendRt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    waterBlendRt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    waterBlendRt.LogicOp = D3D12_LOGIC_OP_NOOP;
+    waterBlendRt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_BLEND_DESC waterBlend{};
+    waterBlend.RenderTarget[0] = waterBlendRt;
+
+    D3D12_DEPTH_STENCIL_DESC waterDss{};
+    waterDss.DepthEnable = TRUE;
+    waterDss.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    waterDss.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC waterPso{};
+    waterPso.pRootSignature = m_rootSignature.Get();
+    waterPso.VS = {m_waterVS->GetBufferPointer(), m_waterVS->GetBufferSize()};
+    waterPso.HS = {m_waterHS->GetBufferPointer(), m_waterHS->GetBufferSize()};
+    waterPso.DS = {m_waterDS->GetBufferPointer(), m_waterDS->GetBufferSize()};
+    waterPso.PS = {m_waterPS->GetBufferPointer(), m_waterPS->GetBufferSize()};
+    waterPso.BlendState = waterBlend;
+    waterPso.SampleMask = UINT_MAX;
+    waterPso.RasterizerState = raster;
+    waterPso.DepthStencilState = waterDss;
+    waterPso.InputLayout = {m_inputLayout, (UINT)_countof(m_inputLayout)};
+    waterPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+    waterPso.NumRenderTargets = 1;
+    waterPso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    waterPso.DSVFormat = m_gBuffer->GetDepthStencilFormat();
+    waterPso.SampleDesc = {1, 0};
+    ThrowIfFailed(m_device->CreateGraphicsPipelineState(&waterPso, IID_PPV_ARGS(&m_waterPSO)), "Water PSO");
     return true;
 }
 
@@ -1023,8 +1092,8 @@ bool RenderingSystem::BuildGeometry()
     };
 
     m_diffuseTextures.clear(); m_diffuseTextures.resize(nD + 1u);
-    m_normalTextures.clear();  m_normalTextures.resize(nN + 1u);
-    m_dispTextures.clear();    m_dispTextures.resize(dispPaths.size() + 1u);
+    m_normalTextures.clear(); m_normalTextures.resize(nN + 1u);
+    m_dispTextures.clear(); m_dispTextures.resize(dispPaths.size() + 1u);
 
     m_diffuseTextures[0] = mkTex(1, 1);
     for (uint32_t i = 0; i < nD; ++i)
@@ -1143,7 +1212,7 @@ void RenderingSystem::UpdatePassConstants()
     cb.RenderTargetSize = XMFLOAT4((float)m_width, (float)m_height, 1.f / m_width, 1.f / m_height);
 
     cb.TessParams = XMFLOAT4(1.f, 6.f, 0.5f, 15.f);
-    cb.DispParams = XMFLOAT4(0.3f, 0.0f, (float)m_renderMode, 0.f);
+    cb.DispParams = XMFLOAT4(0.3f, 0.0f, (float)m_renderMode, m_time);
     std::memcpy(m_mappedPassConstants, &cb, sizeof(cb));
 }
 
@@ -1176,6 +1245,103 @@ void RenderingSystem::FlushCommandQueue()
         ThrowIfFailed(m_fence->SetEventOnCompletion(val, m_fenceEvent), "SetEvent");
         WaitForSingleObject(m_fenceEvent, INFINITE);
     }
+}
+
+bool RenderingSystem::BuildWaterGeometry()
+{
+    const int N = 32;
+    const float size = 60.f;
+    const float step = size / N;
+    const float off = -size * 0.5f;
+
+    std::vector<Vertex> verts;
+    std::vector<uint32_t> indices;
+    verts.reserve((N+1)*(N+1));
+    indices.reserve(N*N*6);
+
+    for (int z = 0; z <= N; ++z)
+    {
+        for (int x = 0; x <= N; ++x)
+        {
+            Vertex v{};
+            v.Pos = {off + x * step, 1.5f, off + z * step};
+            v.Normal = {0.f, 1.f, 0.f};
+            v.TexC = {(float)x / N, (float)z / N};
+            v.Tangent = {1.f, 0.f, 0.f};
+            verts.push_back(v);
+        }
+    }
+
+    for (int z = 0; z < N; ++z)
+    {
+        for (int x = 0; x < N; ++x)
+        {
+            uint32_t i00 = (uint32_t)(z * (N+1) + x);
+            uint32_t i10 = i00 + 1;
+            uint32_t i01 = i00 + (N+1);
+            uint32_t i11 = i01 + 1;
+            indices.push_back(i00); indices.push_back(i10); indices.push_back(i01);
+            indices.push_back(i10); indices.push_back(i11); indices.push_back(i01);
+        }
+    }
+
+    m_waterIndexCount = (uint32_t)indices.size();
+
+    auto defHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    auto upHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+
+    auto mkDefault = [&](UINT64 sz, ComPtr<ID3D12Resource>& r)
+    {
+        auto d = BufferDesc(sz);
+        ThrowIfFailed(m_device->CreateCommittedResource(&defHeap, D3D12_HEAP_FLAG_NONE, &d,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&r)), "water default buf");
+    };
+
+    auto mkUpload = [&](UINT64 sz, const void* data) -> ComPtr<ID3D12Resource>
+    {
+        ComPtr<ID3D12Resource> r;
+        auto d = BufferDesc(sz);
+        ThrowIfFailed(m_device->CreateCommittedResource(&upHeap, D3D12_HEAP_FLAG_NONE, &d,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&r)), "water upload buf");
+        void* mapped = nullptr; D3D12_RANGE rr{0,0};
+        ThrowIfFailed(r->Map(0, &rr, &mapped), "water map");
+        std::memcpy(mapped, data, sz);
+        r->Unmap(0, nullptr);
+        return r;
+    };
+
+    const UINT64 vbSz = verts.size() * sizeof(Vertex);
+    const UINT64 ibSz = indices.size() * sizeof(uint32_t);
+    mkDefault(vbSz, m_waterVertexBuffer);
+    mkDefault(ibSz, m_waterIndexBuffer);
+    auto vbUp = mkUpload(vbSz, verts.data());
+    auto ibUp = mkUpload(ibSz, indices.data());
+
+    ThrowIfFailed(m_commandAllocator->Reset(), "water alloc reset");
+    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr), "water list reset");
+
+    m_commandList->CopyBufferRegion(m_waterVertexBuffer.Get(), 0, vbUp.Get(), 0, vbSz);
+    m_commandList->CopyBufferRegion(m_waterIndexBuffer.Get(), 0, ibUp.Get(), 0, ibSz);
+
+    D3D12_RESOURCE_BARRIER bb[2]{};
+    bb[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    bb[0].Transition.pResource = m_waterVertexBuffer.Get();
+    bb[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    bb[0].Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    bb[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    bb[1] = bb[0];
+    bb[1].Transition.pResource = m_waterIndexBuffer.Get();
+    bb[1].Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+    m_commandList->ResourceBarrier(2, bb);
+
+    ThrowIfFailed(m_commandList->Close(), "water list close");
+    ID3D12CommandList* ls[] = {m_commandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, ls);
+    FlushCommandQueue();
+
+    m_waterVBV = {m_waterVertexBuffer->GetGPUVirtualAddress(), (UINT)vbSz, sizeof(Vertex)};
+    m_waterIBV = {m_waterIndexBuffer->GetGPUVirtualAddress(), (UINT)ibSz, DXGI_FORMAT_R32_UINT};
+    return true;
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE RenderingSystem::CurrentBackBufferRTV() const

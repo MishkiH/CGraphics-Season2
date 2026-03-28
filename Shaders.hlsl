@@ -280,3 +280,108 @@ float4 LightingPS(QuadVSOut pin) : SV_TARGET
 
     return float4(finalColor, 1.0);
 }
+
+
+// water sh
+float WaterH(float x, float z, float t)
+{
+    return sin(x * 0.5 + t * 1.2) * 0.15
+         + sin(z * 0.7 + t * 0.9) * 0.12
+         + sin((x + z) * 0.4 + t * 1.5) * 0.08;
+}
+
+float3 WaterN(float x, float z, float t)
+{
+    float dydx = 0.5  * 0.15 * cos(x * 0.5 + t * 1.2)
+               + 0.4  * 0.08 * cos((x + z) * 0.4 + t * 1.5);
+    float dydz = 0.7  * 0.12 * cos(z * 0.7 + t * 0.9)
+               + 0.4  * 0.08 * cos((x + z) * 0.4 + t * 1.5);
+    return normalize(float3(-dydx, 1.0, -dydz));
+}
+
+struct WaterVsOut
+{
+    float3 PosW : POSITION;
+};
+
+WaterVsOut WaterVS(VSIn vin)
+{
+    WaterVsOut vout;
+    vout.PosW = mul(float4(vin.PosL, 1.0), gWorld).xyz;
+    return vout;
+}
+
+struct WaterHsConst
+{
+    float Edges[3] : SV_TessFactor;
+    float Inside : SV_InsideTessFactor;
+};
+
+WaterHsConst WaterHsPatch(InputPatch<WaterVsOut, 3> p, uint pid : SV_PrimitiveID)
+{
+    WaterHsConst d;
+    d.Edges[0] = 8.0;
+    d.Edges[1] = 8.0;
+    d.Edges[2] = 8.0;
+    d.Inside = 8.0;
+    return d;
+}
+
+[domain("tri")]
+[partitioning("integer")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("WaterHsPatch")]
+[maxtessfactor(8.0)]
+WaterVsOut WaterHS(InputPatch<WaterVsOut, 3> p, uint cpId : SV_OutputControlPointID)
+{
+    return p[cpId];
+}
+
+struct WaterDsOut
+{
+    float4 PosH : SV_POSITION;
+    float3 PosW : POSITION;
+    float3 NormalW : NORMAL;
+};
+
+[domain("tri")]
+WaterDsOut WaterDS(WaterHsConst hsd, float3 bary : SV_DomainLocation,
+                   const OutputPatch<WaterVsOut, 3> patch)
+{
+    float3 posW = bary.x * patch[0].PosW
+                + bary.y * patch[1].PosW
+                + bary.z * patch[2].PosW;
+
+    float t = gDispParams.w;
+    posW.y += WaterH(posW.x, posW.z, t);
+
+    WaterDsOut dout;
+    dout.PosH = mul(float4(posW, 1.0), gViewProj);
+    dout.PosW = posW;
+    dout.NormalW = WaterN(posW.x, posW.z, t);
+    return dout;
+}
+
+float4 WaterPS(WaterDsOut pin) : SV_TARGET
+{
+    float3 N = normalize(pin.NormalW);
+    float3 V = normalize(gEyePosW.xyz - pin.PosW);
+
+    float cosTheta = saturate(dot(N, V));
+    float fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
+
+    float3 waterColor = float3(0.04, 0.89, 0.95);
+    float3 deepColor = float3(0.01, 0.10, 0.30);
+    float3 base  = lerp(deepColor, waterColor, fresnel);
+
+    float3 L = normalize(float3(-0.4, 1.0, -0.3));
+    float  NdotL = saturate(dot(N, L));
+    float3 H = normalize(L + V);
+    float  spec = pow(saturate(dot(N, H)), 128.0) * fresnel;
+
+    float3 color = base * (0.25 + NdotL * 0.75) + float3(0.9, 0.95, 1.0) * spec * 2.0;
+    float  alpha = lerp(0.35, 0.85, fresnel);
+
+    return float4(color, alpha);
+}
