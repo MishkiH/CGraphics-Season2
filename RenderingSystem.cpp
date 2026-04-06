@@ -1,4 +1,5 @@
 #include "RenderingSystem.h"
+#include "ScatterScene.h"
 #include "GBuffer.h"
 #include <stdexcept>
 #include <cstdio>
@@ -447,7 +448,7 @@ namespace
             XMVECTOR T = XMLoadFloat3(&tangentAcc[i]);
             // Gram-Schmidt orthogonalization against normal
             T = T - N * XMVector3Dot(T, N);
-            if (XMVector3LengthSq(T).m128_f32[0] < 1e-10f)
+            if (XMVectorGetX(XMVector3LengthSq(T)) < 1e-10f)
                 T = XMVectorSet(1, 0, 0, 0);
             T = XMVector3Normalize(T);
             XMStoreFloat3(&out.vertices[i].Tangent, T);
@@ -500,6 +501,7 @@ namespace
     }
 }
 
+
 bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
 {
     m_hwnd = hwnd; m_width = width; m_height = height;
@@ -525,7 +527,7 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     m_viewport = {0.f, 0.f, (float)m_width, (float)m_height, 0.f, 1.f};
     m_scissorRect = {0, 0, (LONG)m_width, (LONG)m_height};
 
-    XMStoreFloat4x4(&m_world, XMMatrixScaling(1.f, 1.f, 1.f));
+    XMStoreFloat4x4(&m_world, XMMatrixIdentity());
     SetCamera(m_eyePos, 20.f, 0.f);
     XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(0.25f * XM_PI,
         m_height > 0 ? (float)m_width / m_height : 1.f, 0.05f, 1000.f));
@@ -542,10 +544,11 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     UpdatePassConstants();
     UpdateLightConstants(0.f);
     BuildPSOs();
+    BuildScatterScene();
+
     m_initialized = true;
     return true;
 }
-
 void RenderingSystem::Shutdown()
 {
     if (m_commandQueue) FlushCommandQueue();
@@ -560,29 +563,28 @@ void RenderingSystem::Shutdown()
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
 }
 
+
 void RenderingSystem::OnResize(uint32_t width, uint32_t height)
 {
     if (!m_initialized || !width || !height) return;
     m_width = width; m_height = height;
     FlushCommandQueue();
     for (auto& b : m_backBuffers) b.Reset();
-    ThrowIfFailed(m_swapChain->ResizeBuffers(SwapChainBufferCount, m_width, m_height, DXGI_FORMAT_R8G8B8A8_UNORM, 0), "ResizeBuffers");
+    ThrowIfFailed(m_swapChain->ResizeBuffers(SwapChainBufferCount, m_width, m_height,
+        DXGI_FORMAT_R8G8B8A8_UNORM, 0), "ResizeBuffers");
     m_backBufferIndex = 0;
     CreateBackBufferRTVs();
     if (m_gBuffer) m_gBuffer->Resize(m_device.Get(), m_width, m_height);
+    if (m_scatterScene) m_scatterScene->OnResize(m_device.Get(), m_width, m_height);
     m_viewport = {0.f, 0.f, (float)m_width, (float)m_height, 0.f, 1.f};
     m_scissorRect = {0, 0, (LONG)m_width, (LONG)m_height};
-    XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(0.25f * XM_PI, (float)m_width / m_height, 0.05f, 1000.f));
+    XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(0.25f * XM_PI,
+        (float)m_width / m_height, 0.05f, 1000.f));
     UpdatePassConstants();
 }
 
-void RenderingSystem::Draw(float dt)
+void RenderingSystem::DrawDeferred()
 {
-    if (!m_initialized) return;
-
-    UpdatePassConstants();
-    UpdateLightConstants(dt);
-
     ThrowIfFailed(m_commandAllocator->Reset(), "Reset allocator");
     ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr), "Reset list");
 
@@ -649,11 +651,9 @@ void RenderingSystem::Draw(float dt)
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
 
-    // Water forward pass (alpha blended, tessellated, depth test read-only)
     {
-        const auto bbRtv2 = CurrentBackBufferRTV();
         D3D12_CPU_DESCRIPTOR_HANDLE dsvRO = m_gBuffer->GetDsvReadOnly();
-        m_commandList->OMSetRenderTargets(1, &bbRtv2, FALSE, &dsvRO);
+        m_commandList->OMSetRenderTargets(1, &bbRtv, FALSE, &dsvRO);
 
         m_commandList->SetPipelineState(m_waterPSO.Get());
         m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
@@ -691,6 +691,54 @@ void RenderingSystem::Draw(float dt)
     FlushCommandQueue();
 }
 
+void RenderingSystem::DrawScatter()
+{
+    ThrowIfFailed(m_commandAllocator->Reset(), "Reset allocator");
+    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr), "Reset list");
+
+    D3D12_RESOURCE_BARRIER toRT{};
+    toRT.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toRT.Transition.pResource = CurrentBackBuffer();
+    toRT.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    toRT.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toRT.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_commandList->ResourceBarrier(1, &toRT);
+
+    const auto bbRtv = CurrentBackBufferRTV();
+    const float clearColor[4] = {0.08f, 0.10f, 0.13f, 1.f};
+    m_commandList->ClearRenderTargetView(bbRtv, clearColor, 0, nullptr);
+
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&m_view) * XMLoadFloat4x4(&m_proj));
+
+    m_scatterScene->Draw(m_commandList.Get(), viewProj, m_eyePos,
+                         bbRtv, m_viewport, m_scissorRect);
+
+    D3D12_RESOURCE_BARRIER toPresent = toRT;
+    toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    m_commandList->ResourceBarrier(1, &toPresent);
+
+    ThrowIfFailed(m_commandList->Close(), "Close list");
+    ID3D12CommandList* lists[] = {m_commandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, lists);
+    ThrowIfFailed(m_swapChain->Present(1, 0), "Present");
+    m_backBufferIndex = (m_backBufferIndex + 1) % SwapChainBufferCount;
+    FlushCommandQueue();
+}
+
+void RenderingSystem::Draw(float dt)
+{
+    if (!m_initialized) return;
+
+    UpdateLightConstants(dt);
+    UpdatePassConstants();
+
+    if (m_sceneMode == 1 && m_scatterScene)
+        DrawScatter();
+    else
+        DrawDeferred();
+}
 void RenderingSystem::SetCamera(const XMFLOAT3& eyePos, float yaw, float pitch)
 {
     m_eyePos = eyePos;
@@ -990,7 +1038,7 @@ bool RenderingSystem::BuildPSOs()
 bool RenderingSystem::BuildGeometry()
 {
     ObjMesh model{};
-    if (!LoadObj(ResolveAsset("038F_05SET_04SHOT.obj"), model))
+    if (!LoadObj(ResolveAsset("Meshes/hand/handd.obj"), model))
         throw std::runtime_error("Failed to load .obj");
 
 
@@ -1249,43 +1297,17 @@ void RenderingSystem::FlushCommandQueue()
 
 bool RenderingSystem::BuildWaterGeometry()
 {
-    const int N = 32;
-    const float size = 60.f;
-    const float step = size / N;
-    const float off = -size * 0.5f;
+    const float half = 30.f;
+    const float y = 1.5f;
 
-    std::vector<Vertex> verts;
-    std::vector<uint32_t> indices;
-    verts.reserve((N+1)*(N+1));
-    indices.reserve(N*N*6);
+    std::vector<Vertex> verts(4);
+    verts[0].Pos = {-half, y, -half}; verts[0].Normal = {0,1,0}; verts[0].TexC = {0,0}; verts[0].Tangent = {1,0,0};
+    verts[1].Pos = { half, y, -half}; verts[1].Normal = {0,1,0}; verts[1].TexC = {1,0}; verts[1].Tangent = {1,0,0};
+    verts[2].Pos = {-half, y,  half}; verts[2].Normal = {0,1,0}; verts[2].TexC = {0,1}; verts[2].Tangent = {1,0,0};
+    verts[3].Pos = { half, y,  half}; verts[3].Normal = {0,1,0}; verts[3].TexC = {1,1}; verts[3].Tangent = {1,0,0};
 
-    for (int z = 0; z <= N; ++z)
-    {
-        for (int x = 0; x <= N; ++x)
-        {
-            Vertex v{};
-            v.Pos = {off + x * step, 1.5f, off + z * step};
-            v.Normal = {0.f, 1.f, 0.f};
-            v.TexC = {(float)x / N, (float)z / N};
-            v.Tangent = {1.f, 0.f, 0.f};
-            verts.push_back(v);
-        }
-    }
-
-    for (int z = 0; z < N; ++z)
-    {
-        for (int x = 0; x < N; ++x)
-        {
-            uint32_t i00 = (uint32_t)(z * (N+1) + x);
-            uint32_t i10 = i00 + 1;
-            uint32_t i01 = i00 + (N+1);
-            uint32_t i11 = i01 + 1;
-            indices.push_back(i00); indices.push_back(i10); indices.push_back(i01);
-            indices.push_back(i10); indices.push_back(i11); indices.push_back(i01);
-        }
-    }
-
-    m_waterIndexCount = (uint32_t)indices.size();
+    std::vector<uint32_t> indices = {0,1,2, 1,3,2};
+    m_waterIndexCount = 6;
 
     auto defHeap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
     auto upHeap = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
@@ -1354,4 +1376,46 @@ D3D12_CPU_DESCRIPTOR_HANDLE RenderingSystem::CurrentBackBufferRTV() const
 ID3D12Resource* RenderingSystem::CurrentBackBuffer() const
 {
     return m_backBuffers[m_backBufferIndex].Get();
+}
+bool RenderingSystem::BuildScatterScene()
+{
+    const std::string shrek = ResolveAsset("Meshes/shrek/shrek.obj");
+    const std::string donkey = ResolveAsset("Meshes/donkey/donkey.obj");
+
+    m_scatterScene = std::make_unique<ScatterScene>();
+    if (!m_scatterScene->Initialize(m_device.Get(), m_commandQueue.Get(),
+                                     DXGI_FORMAT_R8G8B8A8_UNORM,
+                                     m_width, m_height, shrek, donkey))
+    {
+        m_scatterScene.reset();
+        return false;
+    }
+    return true;
+}
+
+void RenderingSystem::ToggleFrustumCulling()
+{
+    if (m_scatterScene)
+        m_scatterScene->SetFrustumCulling(!m_scatterScene->FrustumCullingEnabled());
+}
+
+void RenderingSystem::ToggleOctreeCulling()
+{
+    if (m_scatterScene)
+        m_scatterScene->SetOctreeCulling(!m_scatterScene->OctreeCullingEnabled());
+}
+
+bool RenderingSystem::FrustumCullingEnabled() const
+{
+    return m_scatterScene ? m_scatterScene->FrustumCullingEnabled() : false;
+}
+
+bool RenderingSystem::OctreeCullingEnabled() const
+{
+    return m_scatterScene ? m_scatterScene->OctreeCullingEnabled() : false;
+}
+
+uint32_t RenderingSystem::ScatterVisibleCount() const
+{
+    return m_scatterScene ? m_scatterScene->LastVisibleCount() : 0u;
 }

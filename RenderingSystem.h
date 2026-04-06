@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "ScatterScene.h"
+
 class GBuffer;
 
 class RenderingSystem
@@ -22,7 +24,6 @@ class RenderingSystem
 public:
     RenderingSystem();
     ~RenderingSystem();
-    void SetRenderMode(int mode) { m_renderMode = mode; }
 
     struct Vertex
     {
@@ -37,6 +38,17 @@ public:
     void OnResize(uint32_t width, uint32_t height);
     void Draw(float dt);
     void SetCamera(const DirectX::XMFLOAT3& eyePos, float yaw, float pitch);
+
+    void SetSceneMode(int mode) { m_sceneMode = mode; }
+    int  GetSceneMode()   const { return m_sceneMode; }
+
+    void SetRenderMode(int mode) { m_renderMode = mode; }
+
+    void ToggleFrustumCulling();
+    void ToggleOctreeCulling();
+    bool FrustumCullingEnabled() const;
+    bool OctreeCullingEnabled()  const;
+    uint32_t ScatterVisibleCount()   const;
 
 private:
     struct MaterialConstants
@@ -94,6 +106,10 @@ private:
     bool BuildGeometry();
     bool BuildWaterGeometry();
     bool BuildFrameResources();
+    bool BuildScatterScene();
+
+    void DrawDeferred();
+    void DrawScatter();
 
     void UpdatePassConstants();
     void UpdateLightConstants(float dt);
@@ -170,14 +186,17 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_passConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_lightConstantBuffer;
-    uint8_t* m_mappedPassConstants = nullptr;
+    uint8_t* m_mappedPassConstants  = nullptr;
     uint8_t* m_mappedLightConstants = nullptr;
 
     DirectX::XMFLOAT4X4 m_world{};
     DirectX::XMFLOAT4X4 m_view{};
     DirectX::XMFLOAT4X4 m_proj{};
-    DirectX::XMFLOAT3 m_eyePos{-5.f, 20.f, -5.f};
+    DirectX::XMFLOAT3   m_eyePos{-5.f, 20.f, -5.f};
 
-    float m_time = 0.f;
-    int m_renderMode = 3;
+    float m_time       = 0.f;
+    int   m_renderMode = 3;
+    int   m_sceneMode  = 0;
+
+    std::unique_ptr<ScatterScene> m_scatterScene;
 };

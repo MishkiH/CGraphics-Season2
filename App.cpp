@@ -24,33 +24,66 @@
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
 
-static uint64_t GetQpc() { LARGE_INTEGER t{}; QueryPerformanceCounter(&t); return (uint64_t)t.QuadPart; }
-static double GetQpf() { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return (double)f.QuadPart; }
+static uint64_t GetQpc() { LARGE_INTEGER t{}; QueryPerformanceCounter(&t);  return (uint64_t)t.QuadPart; }
+static double   GetQpf() { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return (double)f.QuadPart; }
+
+// ---------------------------------------------------------------------------
 
 void App::ApplyRenderMode()
 {
-    // mode: 0=plain, 1=normal, 2=disp, 3=both
-    int mode = (m_useNormal ? 1 : 0) + (m_useDisp ? 2 : 0);
+    const int mode = (m_useNormal ? 1 : 0) + (m_useDisp ? 2 : 0);
     m_renderer->SetRenderMode(mode);
+    UpdateWindowTitle();
+}
 
-    wchar_t title[128];
-    swprintf_s(title, L"Lab-7 | [N] Normal: %s  [M] Displacement: %s",
-        m_useNormal ? L"ON" : L"OFF",
-        m_useDisp   ? L"ON" : L"OFF");
+void App::UpdateWindowTitle()
+{
+    if (!m_renderer || !m_window) return;
+
+    wchar_t title[256];
+
+    if (m_renderer->GetSceneMode() == 1)
+    {
+        const bool fc = m_renderer->FrustumCullingEnabled();
+        const bool oc = m_renderer->OctreeCullingEnabled();
+        const uint32_t vis = m_renderer->ScatterVisibleCount();
+        swprintf_s(title,
+            L"Lab-7  [Scatter 300]  |  "
+            L"[F] Frustum: %-3s  "
+            L"[O] Octree: %-3s  "
+            L"| Visible: %u/300  |  "
+            L"[Tab] -> Hand scene",
+            fc ? L"ON" : L"OFF",
+            oc ? L"ON" : L"OFF",
+            vis);
+    }
+    else
+    {
+        swprintf_s(title,
+            L"Lab-7  [Hand+Water]  |  "
+            L"[N] Normal: %-3s  "
+            L"[M] Displacement: %-3s  |  "
+            L"[Tab] -> Scatter scene",
+            m_useNormal ? L"ON" : L"OFF",
+            m_useDisp   ? L"ON" : L"OFF");
+    }
+
     SetWindowTextW(m_window->GetHwnd(), title);
 }
+
+// ---------------------------------------------------------------------------
 
 bool App::Initialize(HINSTANCE hInstance, int nCmdShow)
 {
     m_window = new Window();
-    m_input = new Input();
+    m_input  = new Input();
     m_input->Reset();
 
     if (!m_window->Create(this, hInstance, nCmdShow, 1280, 720, L"Lab-7"))
         return false;
 
-    m_secondsPerTick = 1./GetQpf();
-    m_prevTick = GetQpc();
+    m_secondsPerTick = 1.0 / GetQpf();
+    m_prevTick       = GetQpc();
 
     m_renderer = new RenderingSystem();
 
@@ -75,8 +108,8 @@ int App::Run()
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        uint64_t now = GetQpc();
-        float dt = (float)((now - m_prevTick) * m_secondsPerTick);
+        const uint64_t now = GetQpc();
+        const float    dt  = (float)((now - m_prevTick) * m_secondsPerTick);
         m_prevTick = now;
 
         Update(dt);
@@ -94,27 +127,70 @@ void App::Update(float dt)
 
     if (!m_input || !m_renderer || !m_window) return;
 
-    bool nDown = m_input->IsKeyDown('N');
-    if (nDown && !m_nKeyWasDown)
+    // ------------------------------------------------------------------
+    // Tab — switch between deferred (hand+water) and scatter (300 objs)
+    // ------------------------------------------------------------------
+    const bool tabDown = m_input->IsKeyDown(VK_TAB);
+    if (tabDown && !m_tabWasDown)
     {
-        m_useNormal = !m_useNormal;
-        ApplyRenderMode();
+        const int newMode = 1 - m_renderer->GetSceneMode();
+        m_renderer->SetSceneMode(newMode);
+        UpdateWindowTitle();
     }
-    m_nKeyWasDown = nDown;
+    m_tabWasDown = tabDown;
 
-    bool mDown = m_input->IsKeyDown('M');
-    if (mDown && !m_mKeyWasDown)
+    // ------------------------------------------------------------------
+    // Deferred scene: N = normal map, M = displacement
+    // ------------------------------------------------------------------
+    if (m_renderer->GetSceneMode() == 0)
     {
-        m_useDisp = !m_useDisp;
-        ApplyRenderMode();
-    }
-    m_mKeyWasDown = mDown;
+        const bool nDown = m_input->IsKeyDown('N');
+        if (nDown && !m_nKeyWasDown)
+        {
+            m_useNormal = !m_useNormal;
+            ApplyRenderMode();
+        }
+        m_nKeyWasDown = nDown;
 
+        const bool mDown = m_input->IsKeyDown('M');
+        if (mDown && !m_mKeyWasDown)
+        {
+            m_useDisp = !m_useDisp;
+            ApplyRenderMode();
+        }
+        m_mKeyWasDown = mDown;
+    }
+
+    // ------------------------------------------------------------------
+    // Scatter scene: F = frustum culling, O = octree culling
+    // ------------------------------------------------------------------
+    if (m_renderer->GetSceneMode() == 1)
+    {
+        const bool fDown = m_input->IsKeyDown('F');
+        if (fDown && !m_fKeyWasDown)
+        {
+            m_renderer->ToggleFrustumCulling();
+            UpdateWindowTitle();
+        }
+        m_fKeyWasDown = fDown;
+
+        const bool oDown = m_input->IsKeyDown('O');
+        if (oDown && !m_oKeyWasDown)
+        {
+            m_renderer->ToggleOctreeCulling();
+            UpdateWindowTitle();
+        }
+        m_oKeyWasDown = oDown;
+    }
+
+    // ------------------------------------------------------------------
+    // Camera — right mouse button look, WASD + Q/E
+    // ------------------------------------------------------------------
     if (m_input->IsKeyDown(VK_RBUTTON))
     {
-        HWND hwnd = m_window->GetHwnd();
-        RECT rc{}; GetClientRect(hwnd, &rc);
-        POINT center{ (rc.right-rc.left)/2, (rc.bottom-rc.top)/2 };
+        HWND  hwnd = m_window->GetHwnd();
+        RECT  rc{};  GetClientRect(hwnd, &rc);
+        POINT center{ (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
         POINT centerScreen = center;
         ClientToScreen(hwnd, &centerScreen);
 
@@ -126,18 +202,18 @@ void App::Update(float dt)
         }
 
         POINT cur{}; GetCursorPos(&cur);
-        m_camYaw += (cur.x - centerScreen.x) * 0.005f;
+        m_camYaw   += (cur.x - centerScreen.x) * 0.005f;
         m_camPitch -= (cur.y - centerScreen.y) * 0.005f;
-        m_camPitch = std::clamp(m_camPitch, -(XM_PIDIV2 - 0.1f), XM_PIDIV2 - 0.1f);
+        m_camPitch  = std::clamp(m_camPitch, -(XM_PIDIV2 - 0.1f), XM_PIDIV2 - 0.1f);
         SetCursorPos(centerScreen.x, centerScreen.y);
     }
 
-    float speed = m_input->IsKeyDown(VK_SHIFT) ? 12.f : 5.f;
+    const float speed = m_input->IsKeyDown(VK_SHIFT) ? 20.f : 8.f;
 
-    XMVECTOR fwd = XMVector3Normalize(XMVectorSet(sinf(m_camYaw), 0, cosf(m_camYaw), 0));
-    XMVECTOR right = XMVector3Normalize(XMVector3Cross(XMVectorSet(0,1,0,0), fwd));
-    XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-    XMVECTOR move = XMVectorZero();
+    const XMVECTOR fwd   = XMVector3Normalize(XMVectorSet(sinf(m_camYaw), 0, cosf(m_camYaw), 0));
+    const XMVECTOR right = XMVector3Normalize(XMVector3Cross(XMVectorSet(0, 1, 0, 0), fwd));
+    const XMVECTOR up    = XMVectorSet(0, 1, 0, 0);
+    XMVECTOR move        = XMVectorZero();
 
     if (m_input->IsKeyDown('W')) move = XMVectorAdd(move, fwd);
     if (m_input->IsKeyDown('A')) move = XMVectorSubtract(move, right);
@@ -154,6 +230,10 @@ void App::Update(float dt)
     }
 
     m_renderer->SetCamera(m_camPos, m_camYaw, m_camPitch);
+
+    // Update title every frame only for scatter scene to show live visible count
+    if (m_renderer->GetSceneMode() == 1)
+        UpdateWindowTitle();
 }
 
 LRESULT App::HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -167,7 +247,7 @@ LRESULT App::HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         return 0;
 
     case WM_KEYDOWN: if (m_input) m_input->OnKeyDown((uint32_t)wparam); return 0;
-    case WM_KEYUP: if (m_input) m_input->OnKeyUp((uint32_t)wparam);   return 0;
+    case WM_KEYUP:   if (m_input) m_input->OnKeyUp((uint32_t)wparam);   return 0;
 
     case WM_RBUTTONDOWN:
         if (m_input) m_input->OnKeyDown(VK_RBUTTON);
@@ -190,7 +270,7 @@ LRESULT App::HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
 
     case WM_SIZE:
     {
-        uint32_t w = LOWORD(lparam), h = HIWORD(lparam);
+        const uint32_t w = LOWORD(lparam), h = HIWORD(lparam);
         if (w && h && m_renderer) m_renderer->OnResize(w, h);
         return 0;
     }

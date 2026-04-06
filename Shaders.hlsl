@@ -83,7 +83,7 @@ HsConstData HsPatchConst(InputPatch<VsHsOut, 3> p, uint pid : SV_PrimitiveID)
 [outputtopology("triangle_cw")]
 [outputcontrolpoints(3)]
 [patchconstantfunc("HsPatchConst")]
-[maxtessfactor(8.0)]
+[maxtessfactor(32.0)]
 HsCpOut GeometryHS(InputPatch<VsHsOut, 3> p, uint cpId : SV_OutputControlPointID)
 {
     HsCpOut cp;
@@ -282,20 +282,21 @@ float4 LightingPS(QuadVSOut pin) : SV_TARGET
 }
 
 
-// water sh
 float WaterH(float x, float z, float t)
 {
-    return sin(x * 0.5 + t * 1.2) * 0.15
-         + sin(z * 0.7 + t * 0.9) * 0.12
-         + sin((x + z) * 0.4 + t * 1.5) * 0.08;
+    return sin(x * 0.4 + t * 1.2) * sin(t * 0.8) * 0.31
+         + sin(z * 0.6 + t * 0.9) * sin(t * 1.1) * 0.31
+         + sin((x + z) * 0.3 + t * 1.5) * 0.21
+         + cos(x * 0.25 - t * 0.7) * 0.20;
 }
 
 float3 WaterN(float x, float z, float t)
 {
-    float dydx = 0.5  * 0.15 * cos(x * 0.5 + t * 1.2)
-               + 0.4  * 0.08 * cos((x + z) * 0.4 + t * 1.5);
-    float dydz = 0.7  * 0.12 * cos(z * 0.7 + t * 0.9)
-               + 0.4  * 0.08 * cos((x + z) * 0.4 + t * 1.5);
+    float dydx = 0.4 * cos(x * 0.4 + t * 1.2) * sin(t * 0.8) * 0.45
+               + 0.3 * cos((x + z) * 0.3 + t * 1.5) * 0.25
+               - 0.25 * sin(x * 0.25 - t * 0.7) * 0.20;
+    float dydz = 0.6 * cos(z * 0.6 + t * 0.9) * sin(t * 1.1) * 0.35
+               + 0.3 * cos((x + z) * 0.3 + t * 1.5) * 0.25;
     return normalize(float3(-dydx, 1.0, -dydz));
 }
 
@@ -320,19 +321,19 @@ struct WaterHsConst
 WaterHsConst WaterHsPatch(InputPatch<WaterVsOut, 3> p, uint pid : SV_PrimitiveID)
 {
     WaterHsConst d;
-    d.Edges[0] = 8.0;
-    d.Edges[1] = 8.0;
-    d.Edges[2] = 8.0;
-    d.Inside = 8.0;
+    d.Edges[0] = 32.0;
+    d.Edges[1] = 32.0;
+    d.Edges[2] = 32.0;
+    d.Inside = 32.0;
     return d;
 }
 
 [domain("tri")]
-[partitioning("integer")]
+[partitioning("fractional_odd")]
 [outputtopology("triangle_cw")]
 [outputcontrolpoints(3)]
 [patchconstantfunc("WaterHsPatch")]
-[maxtessfactor(8.0)]
+[maxtessfactor(32.0)]
 WaterVsOut WaterHS(InputPatch<WaterVsOut, 3> p, uint cpId : SV_OutputControlPointID)
 {
     return p[cpId];
@@ -354,12 +355,17 @@ WaterDsOut WaterDS(WaterHsConst hsd, float3 bary : SV_DomainLocation,
                 + bary.z * patch[2].PosW;
 
     float t = gDispParams.w;
-    posW.y += WaterH(posW.x, posW.z, t);
+    int mode = (int)gDispParams.z;
+    if (mode == 2 || mode == 3)
+        posW.y = posW.y + WaterH(posW.x, posW.z, t);
 
     WaterDsOut dout;
     dout.PosH = mul(float4(posW, 1.0), gViewProj);
     dout.PosW = posW;
-    dout.NormalW = WaterN(posW.x, posW.z, t);
+    if (mode == 1 || mode == 3)
+        dout.NormalW = WaterN(posW.x, posW.z, t);
+    else
+        dout.NormalW = float3(0.0, 1.0, 0.0);
     return dout;
 }
 
@@ -371,17 +377,15 @@ float4 WaterPS(WaterDsOut pin) : SV_TARGET
     float cosTheta = saturate(dot(N, V));
     float fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
 
-    float3 waterColor = float3(0.04, 0.89, 0.95);
-    float3 deepColor = float3(0.01, 0.10, 0.30);
-    float3 base  = lerp(deepColor, waterColor, fresnel);
+    float3 base = float3(0.13, 0.68, 0.95);
 
     float3 L = normalize(float3(-0.4, 1.0, -0.3));
-    float  NdotL = saturate(dot(N, L));
+    float NdotL = saturate(dot(N, L));
     float3 H = normalize(L + V);
-    float  spec = pow(saturate(dot(N, H)), 128.0) * fresnel;
+    float spec = pow(saturate(dot(N, H)), 64.0) * (0.4 + fresnel * 0.6);
 
-    float3 color = base * (0.25 + NdotL * 0.75) + float3(0.9, 0.95, 1.0) * spec * 2.0;
-    float  alpha = lerp(0.35, 0.85, fresnel);
+    float3 color = base * (0.2 + NdotL * 0.8) + float3(1.0, 1.0, 1.0) * spec * 3.0;
+    float alpha = lerp(0.4, 0.85, fresnel);
 
     return float4(color, alpha);
 }
