@@ -36,11 +36,15 @@ public:
     void OnResize(uint32_t width, uint32_t height);
     void Draw(float dt);
     void SetCamera(const DirectX::XMFLOAT3& eye, float yaw, float pitch);
+    void SetProjectionClipRange(float nearClip, float farClip);
 
     void SetSceneMode(int mode);
     int GetSceneMode() const { return m_sceneMode; }
 
-    void SetRenderMode(int mode);
+    void SetHandRenderMode(int mode);
+    void SetSponzaRenderMode(int mode);
+    void SetSponzaUvEffectsEnabled(bool enabled);
+    bool SponzaUvEffectsEnabled() const;
 
     void ToggleFrustumCulling();
     void ToggleOctreeCulling();
@@ -51,10 +55,14 @@ public:
 private:
     void BeginFrame();
     void EndFrame();
+    void SyncDeferredSceneCameras();
+    void UpdateProjectionMatrix();
     bool CreateDevice();
     bool CreateSwapChain();
     bool CreateBackBufferRTVs();
     void FlushGpu();
+    DeferredScene* GetDeferredScene(SceneMode mode);
+    const DeferredScene* GetDeferredScene(SceneMode mode) const;
 
     D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferRTV() const;
     Microsoft::WRL::ComPtr<ID3D12Resource>& CurrentBackBuffer();
@@ -84,6 +92,8 @@ private:
 
     D3D12_VIEWPORT m_viewport{};
     D3D12_RECT m_scissorRect{};
+    float m_nearClip = 0.05f;
+    float m_farClip = 1000.f;
 
     DirectX::XMFLOAT4X4 m_view{};
     DirectX::XMFLOAT4X4 m_proj{};

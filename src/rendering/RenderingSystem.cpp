@@ -3,6 +3,7 @@
 #include "ScatterScene.h"
 #include "AssetPath.h"
 #include "Dx12Helpers.h"
+#include "SceneProfiles.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -16,101 +17,27 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    DeferredScene::SceneLight MakeDirectionalLight(
-        const XMFLOAT3& direction,
-        const XMFLOAT3& color,
-        float intensity)
-    {
-        DeferredScene::SceneLight light{};
-        light.LightType = DeferredScene::SceneLight::Type::Directional;
-        light.Direction = direction;
-        light.Color = color;
-        light.Intensity = intensity;
-        return light;
-    }
+    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    DeferredScene::SceneLight MakePointLight(
-        const XMFLOAT3& position,
-        const XMFLOAT3& color,
-        float intensity,
-        float range)
+    bool InitializeDeferredScene(
+        ID3D12Device* device,
+        ID3D12CommandQueue* cmdQueue,
+        uint32_t width,
+        uint32_t height,
+        std::unique_ptr<DeferredScene>& scene,
+        const DeferredScene::SceneOptions& options)
     {
-        DeferredScene::SceneLight light{};
-        light.LightType = DeferredScene::SceneLight::Type::Point;
-        light.Position = position;
-        light.Color = color;
-        light.Intensity = intensity;
-        light.Range = range;
-        return light;
-    }
-
-    DeferredScene::SceneLight MakeSpotLight(
-        const XMFLOAT3& position,
-        const XMFLOAT3& direction,
-        const XMFLOAT3& color,
-        float intensity,
-        float range,
-        float innerAngleDeg,
-        float outerAngleDeg)
-    {
-        DeferredScene::SceneLight light{};
-        light.LightType = DeferredScene::SceneLight::Type::Spot;
-        light.Position = position;
-        light.Direction = direction;
-        light.Color = color;
-        light.Intensity = intensity;
-        light.Range = range;
-        light.InnerConeDegrees = innerAngleDeg;
-        light.OuterConeDegrees = outerAngleDeg;
-        return light;
-    }
-
-    DeferredScene::SceneOptions MakeHandSceneOptions()
-    {
-        DeferredScene::SceneOptions options;
-        options.MeshPath = ResolveAsset("Meshes/hand/handd.obj");
-        options.EnableWater = true;
-        options.EnableNormalMapping = true;
-        options.EnableDisplacement = true;
-        options.AmbientColor = {0.3f, 0.3f, 0.3f};
-        options.Lights.push_back(MakeDirectionalLight(
-            XMFLOAT3{0.4f, -1.f, 0.3f},
-            XMFLOAT3{1.f, 0.98f, 0.9f},
-            1.8f));
-        return options;
-    }
-
-    DeferredScene::SceneOptions MakeSponzaSceneOptions()
-    {
-        DeferredScene::SceneOptions options;
-        options.MeshPath = ResolveAsset("Meshes/sponza/sponza.obj");
-        options.EnableWater = false;
-        options.EnableNormalMapping = true;
-        options.EnableDisplacement = false;
-        options.AmbientColor = {0.055f, 0.055f, 0.06f};
-        options.Lights.push_back(MakeDirectionalLight(
-            XMFLOAT3{0.4f, -1.f, 0.3f},
-            XMFLOAT3{0.6f, 0.6f, 1.0f},
-            2.f));
-        options.Lights.push_back(MakePointLight(
-            XMFLOAT3{11.f, 2.f, -0.3f},
-            XMFLOAT3{1.f, 0.1f, 0.1f},
-            3.5f,
-            4.5f));
-        options.Lights.push_back(MakeSpotLight(
-            XMFLOAT3{-10.f, 16.3f, -0.4f},
-            XMFLOAT3{0.6f, -1.f, 0.f},
-            XMFLOAT3{0.2f, 1.f, 0.2f},
-            7.f,
-            19.f,
-            7.f,
-            19.f));
-        return options;
+        scene = std::make_unique<DeferredScene>();
+        return scene->Initialize(device, cmdQueue, kBackBufferFormat, width, height, options);
     }
 }
 
 RenderingSystem::RenderingSystem() = default;
-RenderingSystem::~RenderingSystem() = default;
+
+RenderingSystem::~RenderingSystem()
+{
+    Shutdown();
+}
 
 bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
 {
@@ -135,30 +62,28 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
 
     const XMFLOAT3 defaultEye{-5.f, 20.f, -5.f};
     SetCamera(defaultEye, 0.f, 0.f);
-    XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(XM_PI * 0.25f, (float)width / height, 0.05f, 1000.f));
+    UpdateProjectionMatrix();
 
-    m_handScene = std::make_unique<DeferredScene>();
-    if (!m_handScene->Initialize(
+    if (!InitializeDeferredScene(
             m_device.Get(),
             m_cmdQueue.Get(),
-            DXGI_FORMAT_R8G8B8A8_UNORM,
             width,
             height,
-            MakeHandSceneOptions()))
+            m_handScene,
+            scene_profiles::MakeHandSceneOptions()))
         return false;
 
-    m_sponzaScene = std::make_unique<DeferredScene>();
-    if (!m_sponzaScene->Initialize(
+    if (!InitializeDeferredScene(
             m_device.Get(),
             m_cmdQueue.Get(),
-            DXGI_FORMAT_R8G8B8A8_UNORM,
             width,
             height,
-            MakeSponzaSceneOptions()))
+            m_sponzaScene,
+            scene_profiles::MakeSponzaSceneOptions()))
         return false;
 
     m_scatterScene = std::make_unique<ScatterScene>();
-    if (!m_scatterScene->Initialize(m_device.Get(), m_cmdQueue.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, width, height,
+    if (!m_scatterScene->Initialize(m_device.Get(), m_cmdQueue.Get(), kBackBufferFormat, width, height,
                      ResolveAsset("Meshes/shrek/shrek.obj"), ResolveAsset("Meshes/donkey/Donkey.obj")))
         return false;
 
@@ -168,19 +93,33 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
 
 void RenderingSystem::Shutdown()
 {
-    FlushGpu();
+    if (!m_device)
+        return;
+
+    if (m_initialized)
+        FlushGpu();
+
     if (m_handScene) { m_handScene->Shutdown(); m_handScene.reset(); }
     if (m_sponzaScene) { m_sponzaScene->Shutdown(); m_sponzaScene.reset(); }
     if (m_scatterScene) { m_scatterScene->Shutdown(); m_scatterScene.reset(); }
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
+    m_cmdList.Reset();
+    m_cmdAlloc.Reset();
+    m_cmdQueue.Reset();
+    m_fence.Reset();
+    m_swapChain.Reset();
+    m_rtvHeap.Reset();
+    for (auto& buffer : m_backBuffers) buffer.Reset();
+    m_device.Reset();
+    m_factory.Reset();
+    m_initialized = false;
 }
 
 void RenderingSystem::Draw(float dt)
 {
     if (!m_initialized) return;
 
-    if (m_handScene) m_handScene->SetCamera(m_view, m_proj, m_eye);
-    if (m_sponzaScene) m_sponzaScene->SetCamera(m_view, m_proj, m_eye);
+    SyncDeferredSceneCameras();
 
     BeginFrame();
 
@@ -218,13 +157,13 @@ void RenderingSystem::OnResize(uint32_t width, uint32_t height)
     for (auto& b : m_backBuffers) b.Reset();
 
     dx12::ThrowIfFailed(m_swapChain->ResizeBuffers(SwapChainBufferCount, width, height,
-                    DXGI_FORMAT_R8G8B8A8_UNORM, 0), "ResizeBuffers");
+                    kBackBufferFormat, 0), "ResizeBuffers");
     m_backBufferIndex = 0;
     CreateBackBufferRTVs();
 
     m_viewport = {0.f, 0.f, (float)width, (float)height, 0.f, 1.f};
     m_scissorRect = {0, 0, (LONG)width, (LONG)height};
-    XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(XM_PI * 0.25f, (float)width / height, 0.05f, 1000.f));
+    UpdateProjectionMatrix();
 
     if (m_handScene) m_handScene->OnResize(m_device.Get(), width, height);
     if (m_sponzaScene) m_sponzaScene->OnResize(m_device.Get(), width, height);
@@ -240,10 +179,38 @@ void RenderingSystem::SetCamera(const XMFLOAT3& eye, float yaw, float pitch)
         XMVectorSet(eye.x, eye.y, eye.z, 1.f), fwd, XMVectorSet(0.f, 1.f, 0.f, 0.f)));
 }
 
-void RenderingSystem::SetRenderMode(int mode)
+void RenderingSystem::SetProjectionClipRange(float nearClip, float farClip)
 {
-    if (m_handScene) m_handScene->SetRenderMode(mode);
-    if (m_sponzaScene) m_sponzaScene->SetRenderMode(mode);
+    if (nearClip <= 0.f || farClip <= nearClip)
+        return;
+
+    m_nearClip = nearClip;
+    m_farClip = farClip;
+    UpdateProjectionMatrix();
+}
+
+void RenderingSystem::SetHandRenderMode(int mode)
+{
+    if (DeferredScene* scene = GetDeferredScene(HandSceneMode))
+        scene->SetRenderMode(mode);
+}
+
+void RenderingSystem::SetSponzaRenderMode(int mode)
+{
+    if (DeferredScene* scene = GetDeferredScene(SponzaSceneMode))
+        scene->SetRenderMode(mode);
+}
+
+void RenderingSystem::SetSponzaUvEffectsEnabled(bool enabled)
+{
+    if (DeferredScene* scene = GetDeferredScene(SponzaSceneMode))
+        scene->SetUvEffectsEnabled(enabled);
+}
+
+bool RenderingSystem::SponzaUvEffectsEnabled() const
+{
+    const DeferredScene* scene = GetDeferredScene(SponzaSceneMode);
+    return scene ? scene->UvEffectsEnabled() : false;
 }
 
 void RenderingSystem::SetSceneMode(int mode)
@@ -275,6 +242,22 @@ bool RenderingSystem::OctreeCullingEnabled() const
 uint32_t RenderingSystem::ScatterVisibleCount() const
 {
     return m_scatterScene ? m_scatterScene->LastVisibleCount() : 0u;
+}
+
+void RenderingSystem::SyncDeferredSceneCameras()
+{
+    if (m_handScene) m_handScene->SetCamera(m_view, m_proj, m_eye);
+    if (m_sponzaScene) m_sponzaScene->SetCamera(m_view, m_proj, m_eye);
+}
+
+void RenderingSystem::UpdateProjectionMatrix()
+{
+    if (!m_width || !m_height)
+        return;
+
+    XMStoreFloat4x4(
+        &m_proj,
+        XMMatrixPerspectiveFovLH(XM_PI * 0.25f, (float)m_width / m_height, m_nearClip, m_farClip));
 }
 
 void RenderingSystem::BeginFrame()
@@ -342,7 +325,7 @@ bool RenderingSystem::CreateSwapChain()
     DXGI_SWAP_CHAIN_DESC sd{};
     sd.BufferCount = SwapChainBufferCount;
     sd.BufferDesc.Width = m_width; sd.BufferDesc.Height = m_height;
-    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.BufferDesc.RefreshRate = {60, 1};
+    sd.BufferDesc.Format = kBackBufferFormat; sd.BufferDesc.RefreshRate = {60, 1};
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.OutputWindow = m_hwnd; sd.SampleDesc = {1, 0};
     sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -380,4 +363,30 @@ D3D12_CPU_DESCRIPTOR_HANDLE RenderingSystem::CurrentBackBufferRTV() const
 ComPtr<ID3D12Resource>& RenderingSystem::CurrentBackBuffer()
 {
     return m_backBuffers[m_backBufferIndex];
+}
+
+DeferredScene* RenderingSystem::GetDeferredScene(SceneMode mode)
+{
+    switch (mode)
+    {
+    case HandSceneMode:
+        return m_handScene.get();
+    case SponzaSceneMode:
+        return m_sponzaScene.get();
+    default:
+        return nullptr;
+    }
+}
+
+const DeferredScene* RenderingSystem::GetDeferredScene(SceneMode mode) const
+{
+    switch (mode)
+    {
+    case HandSceneMode:
+        return m_handScene.get();
+    case SponzaSceneMode:
+        return m_sponzaScene.get();
+    default:
+        return nullptr;
+    }
 }

@@ -1,7 +1,9 @@
 #include "App.h"
 #include "Window.h"
 #include "Input.h"
+#include "DeferredScene.h"
 #include "RenderingSystem.h"
+#include "SceneProfiles.h"
 #include <windows.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -12,6 +14,14 @@ using namespace DirectX;
 
 namespace
 {
+    int BuildRenderMode(bool useNormal, bool useDisplacement)
+    {
+        int mode = DeferredScene::RenderFeatureNone;
+        if (useNormal) mode |= DeferredScene::RenderFeatureNormalMapping;
+        if (useDisplacement) mode |= DeferredScene::RenderFeatureDisplacement;
+        return mode;
+    }
+
     uint64_t Qpc() { LARGE_INTEGER t{}; QueryPerformanceCounter(&t); return (uint64_t)t.QuadPart; }
     double Qpf() { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return (double)f.QuadPart; }
 
@@ -23,18 +33,21 @@ namespace
     }
 }
 
+App::App() = default;
+App::~App() = default;
+
 bool App::Initialize(HINSTANCE hInstance, int nCmdShow)
 {
-    m_window = new Window();
-    m_input = new Input();
+    m_window = std::make_unique<Window>();
+    m_input = std::make_unique<Input>();
     m_input->Reset();
 
-    if (!m_window->Create(this, hInstance, nCmdShow, 1920, 1200, L"Lab-8")) return false;
+    if (!m_window->Create(this, hInstance, nCmdShow, 1920, 1200, L"Mini Renderer")) return false;
 
     m_secondsPerTick = 1.0 / Qpf();
     m_prevTick = Qpc();
 
-    m_renderer = new RenderingSystem();
+    m_renderer = std::make_unique<RenderingSystem>();
 
     RECT rc{};
     GetClientRect(m_window->GetHwnd(), &rc);
@@ -43,7 +56,10 @@ bool App::Initialize(HINSTANCE hInstance, int nCmdShow)
                                  (uint32_t)(rc.bottom - rc.top)))
         return false;
 
-    ApplyRenderMode();
+    ApplySceneCameraPreset(RenderingSystem::HandSceneMode);
+    ApplyHandRenderMode();
+    ApplySponzaRenderMode();
+    ApplySponzaUvEffects();
     return true;
 }
 
@@ -72,41 +88,77 @@ void App::Update(float dt)
     if (!m_input || !m_renderer || !m_window) return;
     if (m_input->IsKeyDown(VK_ESCAPE)) { m_exitRequested = true; return; }
 
+    HandleSceneHotkeys();
+    HandleSceneFeatureHotkeys();
+    UpdateCameraController(dt);
+    m_renderer->SetCamera(m_camPos, m_camYaw, m_camPitch);
+
+    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode) UpdateWindowTitle();
+}
+
+void App::HandleSceneHotkeys()
+{
     if (JustPressed(m_input->IsKeyDown(VK_TAB), m_prevTab))
     {
         m_renderer->SetSceneMode((m_renderer->GetSceneMode() + 1) % RenderingSystem::SceneModeCount);
+        ApplySceneCameraPreset(m_renderer->GetSceneMode());
         UpdateWindowTitle();
     }
+}
 
-    if (m_renderer->GetSceneMode() != RenderingSystem::ScatterSceneMode)
-    {
-        if (JustPressed(m_input->IsKeyDown('N'), m_prevN)) { m_useNormal = !m_useNormal; ApplyRenderMode(); }
-        if (m_renderer->GetSceneMode() == RenderingSystem::HandSceneMode)
-        {
-            if (JustPressed(m_input->IsKeyDown('M'), m_prevM)) { m_useDisp = !m_useDisp; ApplyRenderMode(); }
-        }
-        else
-        {
-            m_prevM = m_input->IsKeyDown('M');
-        }
-    }
-    else
+void App::HandleSceneFeatureHotkeys()
+{
+    const int sceneMode = m_renderer->GetSceneMode();
+
+    if (sceneMode == RenderingSystem::ScatterSceneMode)
     {
         m_prevN = m_input->IsKeyDown('N');
         m_prevM = m_input->IsKeyDown('M');
-    }
+        m_prevT = m_input->IsKeyDown('T');
 
-    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode)
-    {
         if (JustPressed(m_input->IsKeyDown('F'), m_prevF)) { m_renderer->ToggleFrustumCulling(); UpdateWindowTitle(); }
         if (JustPressed(m_input->IsKeyDown('O'), m_prevO)) { m_renderer->ToggleOctreeCulling(); UpdateWindowTitle(); }
-    }
-    else
-    {
-        m_prevF = m_input->IsKeyDown('F');
-        m_prevO = m_input->IsKeyDown('O');
+        return;
     }
 
+    m_prevF = m_input->IsKeyDown('F');
+    m_prevO = m_input->IsKeyDown('O');
+
+    if (JustPressed(m_input->IsKeyDown('N'), m_prevN))
+    {
+        if (sceneMode == RenderingSystem::HandSceneMode)
+        {
+            m_handUseNormal = !m_handUseNormal;
+            ApplyHandRenderMode();
+        }
+        else
+        {
+            m_sponzaUseNormal = !m_sponzaUseNormal;
+            ApplySponzaRenderMode();
+        }
+    }
+
+    if (sceneMode == RenderingSystem::HandSceneMode)
+    {
+        if (JustPressed(m_input->IsKeyDown('M'), m_prevM))
+        {
+            m_handUseDisp = !m_handUseDisp;
+            ApplyHandRenderMode();
+        }
+        m_prevT = m_input->IsKeyDown('T');
+        return;
+    }
+
+    m_prevM = m_input->IsKeyDown('M');
+    if (JustPressed(m_input->IsKeyDown('T'), m_prevT))
+    {
+        m_sponzaUvEffects = !m_sponzaUvEffects;
+        ApplySponzaUvEffects();
+    }
+}
+
+void App::UpdateCameraController(float dt)
+{
     if (m_input->IsKeyDown(VK_RBUTTON))
     {
         HWND hwnd = m_window->GetHwnd();
@@ -133,7 +185,7 @@ void App::Update(float dt)
         m_rmbLookActive = false;
     }
 
-    float speed = m_input->IsKeyDown(VK_SHIFT) ? 20.f : 8.f;
+    const float speed = m_camMoveSpeed * (m_input->IsKeyDown(VK_SHIFT) ? 2.75f : 1.f);
     XMVECTOR fwd = XMVector3Normalize(XMVectorSet(sinf(m_camYaw), 0.f, cosf(m_camYaw), 0.f));
     XMVECTOR right = XMVector3Normalize(XMVector3Cross(XMVectorSet(0.f, 1.f, 0.f, 0.f), fwd));
     XMVECTOR move = XMVectorZero();
@@ -151,16 +203,41 @@ void App::Update(float dt)
         pos = XMVectorAdd(pos, XMVectorScale(XMVector3Normalize(move), speed * dt));
         XMStoreFloat3(&m_camPos, pos);
     }
-
-    m_renderer->SetCamera(m_camPos, m_camYaw, m_camPitch);
-
-    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode) UpdateWindowTitle();
 }
 
-void App::ApplyRenderMode()
+void App::ApplyHandRenderMode()
 {
-    m_renderer->SetRenderMode((m_useNormal ? 1 : 0) | (m_useDisp ? 2 : 0));
+    if (!m_renderer) return;
+    m_renderer->SetHandRenderMode(BuildRenderMode(m_handUseNormal, m_handUseDisp));
     UpdateWindowTitle();
+}
+
+void App::ApplySponzaRenderMode()
+{
+    if (!m_renderer) return;
+    m_renderer->SetSponzaRenderMode(BuildRenderMode(m_sponzaUseNormal, false));
+    UpdateWindowTitle();
+}
+
+void App::ApplySponzaUvEffects()
+{
+    if (!m_renderer) return;
+    m_renderer->SetSponzaUvEffectsEnabled(m_sponzaUvEffects);
+    UpdateWindowTitle();
+}
+
+void App::ApplySceneCameraPreset(int sceneMode)
+{
+    const scene_profiles::CameraPreset preset = scene_profiles::GetCameraPresetForScene(sceneMode);
+    m_camPos = preset.Position;
+    m_camYaw = preset.Yaw;
+    m_camPitch = preset.Pitch;
+    m_camMoveSpeed = preset.MoveSpeed;
+    if (m_renderer)
+    {
+        m_renderer->SetProjectionClipRange(preset.NearClip, preset.FarClip);
+        m_renderer->SetCamera(m_camPos, m_camYaw, m_camPitch);
+    }
 }
 
 void App::UpdateWindowTitle()
@@ -176,14 +253,17 @@ void App::UpdateWindowTitle()
     }
     else if (m_renderer->GetSceneMode() == RenderingSystem::SponzaSceneMode)
     {
-        swprintf_s(buf, L"Lab-6  |  Sponza Deferred  |  [N] Normals: %-3s  [M] Displacement: N/A  |  [Tab] Scatter scene",
-            m_useNormal ? L"ON" : L"OFF");
+        swprintf_s(
+            buf,
+            L"Lab-5/6  |  Sponza Deferred  |  [N] Normals: %-3s  [T] UV FX: %-3s  |  Dir + Point + Spot  |  [Tab] Scatter scene",
+            m_sponzaUseNormal ? L"ON" : L"OFF",
+            m_renderer->SponzaUvEffectsEnabled() ? L"ON" : L"OFF");
     }
     else
     {
-        swprintf_s(buf, L"Lab-7  |  Hand + Water  |  [N] Normals: %-3s  [M] Displacement: %-3s  |  [Tab] Sponza scene",
-            m_useNormal ? L"ON" : L"OFF",
-            m_useDisp ? L"ON" : L"OFF");
+        swprintf_s(buf, L"Lab-7  |  Hand + Water  |  Tessellation active  |  [N] Normals: %-3s  [M] Displacement: %-3s  |  [Tab] Sponza scene",
+            m_handUseNormal ? L"ON" : L"OFF",
+            m_handUseDisp ? L"ON" : L"OFF");
     }
     SetWindowTextW(m_window->GetHwnd(), buf);
 }

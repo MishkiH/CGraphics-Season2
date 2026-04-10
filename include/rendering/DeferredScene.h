@@ -19,6 +19,13 @@
 class DeferredScene
 {
 public:
+    enum RenderFeature : int
+    {
+        RenderFeatureNone = 0,
+        RenderFeatureNormalMapping = 1 << 0,
+        RenderFeatureDisplacement = 1 << 1,
+    };
+
     struct SceneLight
     {
         enum class Type
@@ -42,8 +49,11 @@ public:
     {
         std::string MeshPath;
         bool EnableWater = false;
+        bool UseTessellation = true;
         bool EnableNormalMapping = true;
         bool EnableDisplacement = true;
+        float SceneScale = 1.f;
+        DirectX::XMFLOAT3 SceneOffset{0.f, 0.f, 0.f};
         DirectX::XMFLOAT3 AmbientColor{0.05f, 0.05f, 0.06f};
         DirectX::XMFLOAT2 UvTiling{1.f, 1.f};
         DirectX::XMFLOAT2 UvScrollRate{0.f, 0.f};
@@ -62,6 +72,9 @@ public:
                    const DirectX::XMFLOAT3& eye);
 
     void SetRenderMode(int mode) { m_renderMode = mode; }
+    void SetUvEffectsEnabled(bool enabled) { m_uvEffectsEnabled = enabled; }
+    bool UvEffectsEnabled() const { return m_uvEffectsEnabled; }
+    bool UsesTessellation() const { return m_options.UseTessellation; }
 
     void RecordCommands(ID3D12GraphicsCommandList* cmdList,
                         D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
@@ -133,7 +146,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_waterPSO;
 
-    Microsoft::WRL::ComPtr<ID3DBlob> m_geometryVS, m_geometryPS;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_geometryVS, m_geometryFlatVS, m_geometryPS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_hullShader, m_domainShader;
     Microsoft::WRL::ComPtr<ID3DBlob> m_lightingVS, m_lightingPS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_waterVS, m_waterHS, m_waterDS, m_waterPS;
@@ -166,5 +179,6 @@ private:
     DirectX::XMFLOAT3 m_eye{};
     SceneOptions m_options;
     float m_time = 0.f;
-    int m_renderMode = 3;
+    int m_renderMode = RenderFeatureNormalMapping | RenderFeatureDisplacement;
+    bool m_uvEffectsEnabled = false;
 };

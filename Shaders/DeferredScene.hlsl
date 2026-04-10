@@ -37,6 +37,11 @@ struct VsHsOut
     float2 TexC : TEXCOORD;
 };
 
+float2 ApplyUvTransform(float2 uv)
+{
+    return uv * gUvOffsetTiling.zw + gUvOffsetTiling.xy;
+}
+
 VsHsOut GeometryVS(VSIn vin)
 {
     VsHsOut vout;
@@ -44,6 +49,28 @@ VsHsOut GeometryVS(VSIn vin)
     vout.PosW = mul(float4(vin.PosL, 1.0), gWorld).xyz;
     vout.NormalW = mul(vin.NormalL, w3);
     vout.TangentW= mul(vin.TangentL, w3);
+    vout.TexC = vin.TexC;
+    return vout;
+}
+
+struct GeometryPixelIn
+{
+    float4 PosH : SV_POSITION;
+    float3 PosW : POSITION;
+    float3 NormalW : NORMAL;
+    float3 TangentW : TANGENT;
+    float2 TexC : TEXCOORD;
+};
+
+GeometryPixelIn GeometryFlatVS(VSIn vin)
+{
+    GeometryPixelIn vout;
+    float3x3 w3 = (float3x3)gWorld;
+    float4 posW = mul(float4(vin.PosL, 1.0), gWorld);
+    vout.PosH = mul(posW, gViewProj);
+    vout.PosW = posW.xyz;
+    vout.NormalW = mul(vin.NormalL, w3);
+    vout.TangentW = mul(vin.TangentL, w3);
     vout.TexC = vin.TexC;
     return vout;
 }
@@ -95,28 +122,19 @@ HsCpOut GeometryHS(InputPatch<VsHsOut, 3> p, uint cpId : SV_OutputControlPointID
     return cp;
 }
 
-struct DsOut
-{
-    float4 PosH : SV_POSITION;
-    float3 PosW : POSITION;
-    float3 NormalW : NORMAL;
-    float3 TangentW : TANGENT;
-    float2 TexC : TEXCOORD;
-};
-
 [domain("tri")]
-DsOut GeometryDS(
+GeometryPixelIn GeometryDS(
     HsConstData hsd,
     float3 bary : SV_DomainLocation,
     const OutputPatch<HsCpOut, 3> patch)
 {
-    DsOut dout;
+    GeometryPixelIn dout;
 
     float3 posW = bary.x*patch[0].PosW + bary.y*patch[1].PosW + bary.z*patch[2].PosW;
     float3 normalW = bary.x*patch[0].NormalW + bary.y*patch[1].NormalW + bary.z*patch[2].NormalW;
     float3 tangentW= bary.x*patch[0].TangentW+ bary.y*patch[1].TangentW+ bary.z*patch[2].TangentW;
     float2 texC = bary.x*patch[0].TexC   + bary.y*patch[1].TexC   + bary.z*patch[2].TexC;
-    float2 uv = texC * gUvOffsetTiling.zw + gUvOffsetTiling.xy;
+    float2 uv = ApplyUvTransform(texC);
 
     normalW = normalize(normalW);
     tangentW = normalize(tangentW);
@@ -133,7 +151,7 @@ DsOut GeometryDS(
     dout.PosW = posW;
     dout.NormalW = normalW;
     dout.TangentW= tangentW;
-    dout.TexC = uv;
+    dout.TexC = texC;
     return dout;
 }
 
@@ -143,11 +161,12 @@ struct GBufferOut
     float4 Normal : SV_Target1;
 };
 
-GBufferOut GeometryPS(DsOut pin)
+GBufferOut GeometryPS(GeometryPixelIn pin)
 {
     GBufferOut gout;
 
-    float3 albedo = gDiffuseMap.Sample(gSampler, pin.TexC).rgb * gBaseColor.rgb;
+    float2 uv = ApplyUvTransform(pin.TexC);
+    float3 albedo = gDiffuseMap.Sample(gSampler, uv).rgb * gBaseColor.rgb;
     gout.AlbedoSpec = float4(albedo, gSurfaceParams.x);
 
     int mode = (int)gDispParams.z;
@@ -159,7 +178,7 @@ GBufferOut GeometryPS(DsOut pin)
         float3 T = normalize(pin.TangentW - dot(pin.TangentW, N) * N);
         float3 B = cross(N, T);
         float3x3 TBN = float3x3(T, B, N);
-        float3 normalTS = gNormalMap.Sample(gSampler, pin.TexC).rgb * 2.0 - 1.0;
+        float3 normalTS = gNormalMap.Sample(gSampler, uv).rgb * 2.0 - 1.0;
         finalNormal = normalize(mul(normalTS, TBN));
     }
     else

@@ -4,6 +4,14 @@
 
 using namespace DirectX;
 
+namespace
+{
+    constexpr uint32_t kPlacementColumns = 20;
+    constexpr float kMinPlacementSpacing = 24.f;
+    constexpr float kPlacementSpacingMultiplier = 2.2f;
+    constexpr float kPlacementJitterRatio = 0.18f;
+}
+
 bool SceneObjectManager::Initialize(const std::string& mesh0Path, const std::string& mesh1Path)
 {
     if (!LoadObj(mesh0Path, m_meshes[0])) return false;
@@ -20,16 +28,28 @@ void SceneObjectManager::PlaceInstances()
     m_worldBounds.reserve(InstanceCount);
 
     std::mt19937 rng(42);
-    std::uniform_real_distribution<float> posDist(-80.f, 80.f);
     std::uniform_real_distribution<float> rotDist(0.f, XM_2PI);
-    std::uniform_real_distribution<float> scaleDist(0.8f, 1.4f);
+    std::uniform_real_distribution<float> scaleDist(0.85f, 1.25f);
+    const float spacing = ComputePlacementSpacing();
+    const uint32_t columns = kPlacementColumns;
+    const uint32_t rows = (InstanceCount + columns - 1) / columns;
+    const float originX = -0.5f * (columns - 1) * spacing;
+    const float originZ = -0.5f * (rows - 1) * spacing;
+    const float jitter = spacing * kPlacementJitterRatio;
+    std::uniform_real_distribution<float> jitterDist(-jitter, jitter);
 
     for (uint32_t i = 0; i < InstanceCount; ++i)
     {
-        uint32_t meshIdx = (i < InstanceCount / 2) ? 0u : 1u;
-        XMMATRIX world = XMMatrixScaling(scaleDist(rng), scaleDist(rng), scaleDist(rng))
+        const uint32_t meshIdx = PickMeshIndex(rng);
+        const uint32_t column = i % columns;
+        const uint32_t row = i / columns;
+        const float x = originX + column * spacing + jitterDist(rng);
+        const float z = originZ + row * spacing + jitterDist(rng);
+        const float scale = scaleDist(rng);
+
+        XMMATRIX world = XMMatrixScaling(scale, scale, scale)
                        * XMMatrixRotationY(rotDist(rng))
-                       * XMMatrixTranslation(posDist(rng), 0.f, posDist(rng));
+                       * XMMatrixTranslation(x, 0.f, z);
 
         SceneInstance inst;
         inst.MeshIndex = meshIdx;
@@ -51,6 +71,24 @@ AABB SceneObjectManager::ComputeSceneBounds() const
     scene.Min.x -= 1.f; scene.Min.y -= 1.f; scene.Min.z -= 1.f;
     scene.Max.x += 1.f; scene.Max.y += 1.f; scene.Max.z += 1.f;
     return scene;
+}
+
+float SceneObjectManager::ComputePlacementSpacing() const
+{
+    const auto spanXZ = [](const MeshData& mesh) {
+        const float sizeX = mesh.BoundsMax.x - mesh.BoundsMin.x;
+        const float sizeZ = mesh.BoundsMax.z - mesh.BoundsMin.z;
+        return std::max(sizeX, sizeZ);
+    };
+
+    const float maxSpan = std::max(spanXZ(m_meshes[0]), spanXZ(m_meshes[1]));
+    return std::max(kMinPlacementSpacing, maxSpan * kPlacementSpacingMultiplier);
+}
+
+uint32_t SceneObjectManager::PickMeshIndex(std::mt19937& rng) const
+{
+    std::uniform_int_distribution<uint32_t> meshDist(0, MeshCount - 1);
+    return meshDist(rng);
 }
 
 void SceneObjectManager::BuildOctree(int maxDepth, int minPerLeaf)

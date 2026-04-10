@@ -32,6 +32,8 @@ public:
 private:
     void PlaceInstances();
     AABB ComputeSceneBounds() const;
+    float ComputePlacementSpacing() const;
+    uint32_t PickMeshIndex(std::mt19937& rng) const;
 
     MeshData m_meshes[MeshCount];
     std::vector<SceneInstance> m_instances;

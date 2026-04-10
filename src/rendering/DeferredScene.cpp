@@ -13,6 +13,39 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+    constexpr int kMaterialConstantCount = 8;
+
+    XMMATRIX BuildSceneWorldMatrix(const DeferredScene::SceneOptions& options)
+    {
+        return XMMatrixScaling(options.SceneScale, options.SceneScale, options.SceneScale)
+             * XMMatrixTranslation(options.SceneOffset.x, options.SceneOffset.y, options.SceneOffset.z);
+    }
+
+    bool HasUvEffectsConfigured(const DeferredScene::SceneOptions& options)
+    {
+        return options.UvTiling.x != 1.f
+            || options.UvTiling.y != 1.f
+            || options.UvScrollRate.x != 0.f
+            || options.UvScrollRate.y != 0.f;
+    }
+
+    XMFLOAT4 BuildUvTransform(const DeferredScene::SceneOptions& options, float time, bool uvEffectsEnabled)
+    {
+        if (!uvEffectsEnabled)
+            return {0.f, 0.f, 1.f, 1.f};
+
+        const float uvOffsetX = std::fmod(time * options.UvScrollRate.x, 1.f);
+        const float uvOffsetY = std::fmod(time * options.UvScrollRate.y, 1.f);
+        return {uvOffsetX, uvOffsetY, options.UvTiling.x, options.UvTiling.y};
+    }
+
+    XMFLOAT4 BuildTessellationParams(bool useTessellation)
+    {
+        return useTessellation
+            ? XMFLOAT4{1.f, 6.f, 0.5f, 15.f}
+            : XMFLOAT4{1.f, 1.f, 1.f, 1.f};
+    }
+
     XMFLOAT3 NormalizeOrFallback(const XMFLOAT3& v, const XMFLOAT3& fallback)
     {
         const XMVECTOR vec = XMLoadFloat3(&v);
@@ -30,6 +63,8 @@ bool DeferredScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueu
                                 const SceneOptions& options)
 {
     m_options = options;
+    m_options.MeshPath = ResolveAsset(m_options.MeshPath);
+    m_uvEffectsEnabled = HasUvEffectsConfigured(m_options);
     if (m_options.MeshPath.empty())
         return false;
     if (m_options.Lights.empty())
@@ -102,7 +137,10 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
 
     ID3D12DescriptorHeap* texHeaps[] = {m_textureHeap.Get()};
     cmdList->SetDescriptorHeaps(1, texHeaps);
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+    cmdList->IASetPrimitiveTopology(
+        m_options.UseTessellation
+            ? D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST
+            : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->IASetVertexBuffers(0, 1, &m_vbv);
     cmdList->IASetIndexBuffer(&m_ibv);
 
@@ -118,7 +156,7 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
         cmdList->SetGraphicsRootDescriptorTable(1, srvAt(item.TextureIndex));
         cmdList->SetGraphicsRootDescriptorTable(5, srvAt(item.NormalTextureIndex));
         cmdList->SetGraphicsRootDescriptorTable(6, srvAt(item.DisplacementTextureIndex));
-        cmdList->SetGraphicsRoot32BitConstants(2, 8, &item.Material, 0);
+        cmdList->SetGraphicsRoot32BitConstants(2, kMaterialConstantCount, &item.Material, 0);
         cmdList->DrawIndexedInstanced(item.IndexCount, 1, item.StartIndexLocation, 0, 0);
     }
 
@@ -157,7 +195,7 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
         cmdList->SetGraphicsRootDescriptorTable(6, base);
 
         const float dummyMat[8] = {1.f, 1.f, 1.f, 1.f, 0.18f, 32.f, 0.f, 0.f};
-        cmdList->SetGraphicsRoot32BitConstants(2, 8, dummyMat, 0);
+        cmdList->SetGraphicsRoot32BitConstants(2, kMaterialConstantCount, dummyMat, 0);
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
         cmdList->IASetVertexBuffers(0, 1, &m_waterVBV);
         cmdList->IASetIndexBuffer(&m_waterIBV);
@@ -185,6 +223,7 @@ bool DeferredScene::BuildShaders(ID3D12Device*)
     };
 
     return compile("GeometryVS", "vs_5_0", m_geometryVS)
+        && compile("GeometryFlatVS", "vs_5_0", m_geometryFlatVS)
         && compile("GeometryHS", "hs_5_0", m_hullShader)
         && compile("GeometryDS", "ds_5_0", m_domainShader)
         && compile("GeometryPS", "ps_5_0", m_geometryPS)
@@ -286,14 +325,21 @@ bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC geoPso{};
     geoPso.pRootSignature = m_rootSig.Get();
-    geoPso.VS = {m_geometryVS->GetBufferPointer(), m_geometryVS->GetBufferSize()};
-    geoPso.HS = {m_hullShader->GetBufferPointer(), m_hullShader->GetBufferSize()};
-    geoPso.DS = {m_domainShader->GetBufferPointer(), m_domainShader->GetBufferSize()};
+    geoPso.VS = m_options.UseTessellation
+        ? D3D12_SHADER_BYTECODE{m_geometryVS->GetBufferPointer(), m_geometryVS->GetBufferSize()}
+        : D3D12_SHADER_BYTECODE{m_geometryFlatVS->GetBufferPointer(), m_geometryFlatVS->GetBufferSize()};
+    if (m_options.UseTessellation)
+    {
+        geoPso.HS = {m_hullShader->GetBufferPointer(), m_hullShader->GetBufferSize()};
+        geoPso.DS = {m_domainShader->GetBufferPointer(), m_domainShader->GetBufferSize()};
+    }
     geoPso.PS = {m_geometryPS->GetBufferPointer(), m_geometryPS->GetBufferSize()};
     geoPso.BlendState = blendOff; geoPso.SampleMask = UINT_MAX;
     geoPso.RasterizerState = raster; geoPso.DepthStencilState = geoDepth;
     geoPso.InputLayout = {m_inputLayout, 4};
-    geoPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+    geoPso.PrimitiveTopologyType = m_options.UseTessellation
+        ? D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH
+        : D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     geoPso.NumRenderTargets = GBuffer::TargetCount;
     geoPso.RTVFormats[0] = m_gBuffer->GetAlbedoSpecFormat();
     geoPso.RTVFormats[1] = m_gBuffer->GetNormalFormat();
@@ -482,18 +528,17 @@ void DeferredScene::UpdatePassConstants(uint32_t width, uint32_t height)
 
     XMMATRIX vp = XMLoadFloat4x4(&m_view) * XMLoadFloat4x4(&m_proj);
     XMMATRIX ivp = XMMatrixInverse(nullptr, vp);
+    const XMMATRIX world = BuildSceneWorldMatrix(m_options);
 
     PassConstants cb{};
-    XMStoreFloat4x4(&cb.World, XMMatrixTranspose(XMMatrixIdentity()));
+    XMStoreFloat4x4(&cb.World, XMMatrixTranspose(world));
     XMStoreFloat4x4(&cb.ViewProj, XMMatrixTranspose(vp));
     XMStoreFloat4x4(&cb.InvViewProj, XMMatrixTranspose(ivp));
     cb.EyePosW = {m_eye.x, m_eye.y, m_eye.z, 1.f};
     cb.RenderTargetSize = {(float)width, (float)height, 1.f / width, 1.f / height};
-    cb.TessParams = {1.f, 6.f, 0.5f, 15.f};
+    cb.TessParams = BuildTessellationParams(m_options.UseTessellation);
     cb.DispParams = {0.3f, 0.f, (float)EffectiveRenderMode(), m_time};
-    const float uvOffsetX = std::fmod(m_time * m_options.UvScrollRate.x, 1.f);
-    const float uvOffsetY = std::fmod(m_time * m_options.UvScrollRate.y, 1.f);
-    cb.UvOffsetTiling = {uvOffsetX, uvOffsetY, m_options.UvTiling.x, m_options.UvTiling.y};
+    cb.UvOffsetTiling = BuildUvTransform(m_options, m_time, m_uvEffectsEnabled);
     std::memcpy(m_mappedPassCB, &cb, sizeof(cb));
 }
 
@@ -546,7 +591,7 @@ void DeferredScene::UpdateLightConstants(float dt)
 int DeferredScene::EffectiveRenderMode() const
 {
     int mode = m_renderMode;
-    if (!m_options.EnableNormalMapping) mode &= ~1;
-    if (!m_options.EnableDisplacement) mode &= ~2;
+    if (!m_options.EnableNormalMapping) mode &= ~RenderFeatureNormalMapping;
+    if (!m_options.EnableDisplacement || !m_options.UseTessellation) mode &= ~RenderFeatureDisplacement;
     return mode;
 }
