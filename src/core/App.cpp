@@ -74,14 +74,21 @@ void App::Update(float dt)
 
     if (JustPressed(m_input->IsKeyDown(VK_TAB), m_prevTab))
     {
-        m_renderer->SetSceneMode(1 - m_renderer->GetSceneMode());
+        m_renderer->SetSceneMode((m_renderer->GetSceneMode() + 1) % RenderingSystem::SceneModeCount);
         UpdateWindowTitle();
     }
 
-    if (m_renderer->GetSceneMode() == 0)
+    if (m_renderer->GetSceneMode() != RenderingSystem::ScatterSceneMode)
     {
         if (JustPressed(m_input->IsKeyDown('N'), m_prevN)) { m_useNormal = !m_useNormal; ApplyRenderMode(); }
-        if (JustPressed(m_input->IsKeyDown('M'), m_prevM)) { m_useDisp = !m_useDisp; ApplyRenderMode(); }
+        if (m_renderer->GetSceneMode() == RenderingSystem::HandSceneMode)
+        {
+            if (JustPressed(m_input->IsKeyDown('M'), m_prevM)) { m_useDisp = !m_useDisp; ApplyRenderMode(); }
+        }
+        else
+        {
+            m_prevM = m_input->IsKeyDown('M');
+        }
     }
     else
     {
@@ -89,7 +96,7 @@ void App::Update(float dt)
         m_prevM = m_input->IsKeyDown('M');
     }
 
-    if (m_renderer->GetSceneMode() == 1)
+    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode)
     {
         if (JustPressed(m_input->IsKeyDown('F'), m_prevF)) { m_renderer->ToggleFrustumCulling(); UpdateWindowTitle(); }
         if (JustPressed(m_input->IsKeyDown('O'), m_prevO)) { m_renderer->ToggleOctreeCulling(); UpdateWindowTitle(); }
@@ -147,7 +154,7 @@ void App::Update(float dt)
 
     m_renderer->SetCamera(m_camPos, m_camYaw, m_camPitch);
 
-    if (m_renderer->GetSceneMode() == 1) UpdateWindowTitle();
+    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode) UpdateWindowTitle();
 }
 
 void App::ApplyRenderMode()
@@ -160,16 +167,21 @@ void App::UpdateWindowTitle()
 {
     if (!m_window || !m_renderer) return;
     wchar_t buf[256];
-    if (m_renderer->GetSceneMode() == 1)
+    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode)
     {
         swprintf_s(buf, L"Lab-8  |  Scatter 300  |  [F] Frustum: %-3s  [O] Octree: %-3s  |  Visible: %u/300  |  [Tab] Hand scene",
             m_renderer->FrustumCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->OctreeCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->ScatterVisibleCount());
     }
+    else if (m_renderer->GetSceneMode() == RenderingSystem::SponzaSceneMode)
+    {
+        swprintf_s(buf, L"Lab-6  |  Sponza Deferred  |  [N] Normals: %-3s  [M] Displacement: N/A  |  [Tab] Scatter scene",
+            m_useNormal ? L"ON" : L"OFF");
+    }
     else
     {
-        swprintf_s(buf, L"Lab-8  |  Hand + Water  |  [N] Normals: %-3s  [M] Displacement: %-3s  |  [Tab] Scatter scene",
+        swprintf_s(buf, L"Lab-7  |  Hand + Water  |  [N] Normals: %-3s  [M] Displacement: %-3s  |  [Tab] Sponza scene",
             m_useNormal ? L"ON" : L"OFF",
             m_useDisp ? L"ON" : L"OFF");
     }

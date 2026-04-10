@@ -12,14 +12,47 @@
 #include <DirectXMath.h>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 #include "GBuffer.h"
 
 class DeferredScene
 {
 public:
+    struct SceneLight
+    {
+        enum class Type
+        {
+            Directional,
+            Point,
+            Spot,
+        };
+
+        Type LightType = Type::Directional;
+        DirectX::XMFLOAT3 Position{0.f, 0.f, 0.f};
+        float Range = 1.f;
+        DirectX::XMFLOAT3 Direction{0.f, -1.f, 0.f};
+        float InnerConeDegrees = 15.f;
+        DirectX::XMFLOAT3 Color{1.f, 1.f, 1.f};
+        float Intensity = 1.f;
+        float OuterConeDegrees = 25.f;
+    };
+
+    struct SceneOptions
+    {
+        std::string MeshPath;
+        bool EnableWater = false;
+        bool EnableNormalMapping = true;
+        bool EnableDisplacement = true;
+        DirectX::XMFLOAT3 AmbientColor{0.05f, 0.05f, 0.06f};
+        DirectX::XMFLOAT2 UvTiling{1.f, 1.f};
+        DirectX::XMFLOAT2 UvScrollRate{0.f, 0.f};
+        std::vector<SceneLight> Lights;
+    };
+
     bool Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue,
-                    DXGI_FORMAT backBufferFmt, uint32_t width, uint32_t height);
+                    DXGI_FORMAT backBufferFmt, uint32_t width, uint32_t height,
+                    const SceneOptions& options);
 
     void Shutdown();
     void OnResize(ID3D12Device* device, uint32_t width, uint32_t height);
@@ -46,6 +79,7 @@ private:
         DirectX::XMFLOAT4 RenderTargetSize{1.f, 1.f, 1.f, 1.f};
         DirectX::XMFLOAT4 TessParams{1.f, 6.f, 0.5f, 15.f};
         DirectX::XMFLOAT4 DispParams{0.02f, -0.01f, 0.f, 0.f};
+        DirectX::XMFLOAT4 UvOffsetTiling{0.f, 0.f, 1.f, 1.f};
     };
 
     struct alignas(16) GpuLight
@@ -84,14 +118,15 @@ private:
     bool BuildShaders(ID3D12Device* device);
     bool BuildRootSignature(ID3D12Device* device);
     bool BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt);
-    bool BuildHandGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                           std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploads);
+    bool BuildSceneGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
+                            std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploads);
     bool BuildWaterGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
                             std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploads);
     bool BuildConstantBuffers(ID3D12Device* device);
 
     void UpdatePassConstants(uint32_t width, uint32_t height);
     void UpdateLightConstants(float dt);
+    int EffectiveRenderMode() const;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_geometryPSO;
@@ -129,6 +164,7 @@ private:
     DirectX::XMFLOAT4X4 m_view{};
     DirectX::XMFLOAT4X4 m_proj{};
     DirectX::XMFLOAT3 m_eye{};
+    SceneOptions m_options;
     float m_time = 0.f;
     int m_renderMode = 3;
 };

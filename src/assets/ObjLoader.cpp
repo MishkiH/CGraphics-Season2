@@ -3,6 +3,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 using namespace DirectX;
@@ -35,6 +36,26 @@ namespace
         return last;
     }
 
+    std::string ToLowerAscii(std::string value)
+    {
+        std::transform(
+            value.begin(),
+            value.end(),
+            value.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    }
+
+    bool LooksLikeNormalMap(const std::string& path)
+    {
+        const std::string lower = ToLowerAscii(path);
+        return lower.find("ddn") != std::string::npos
+            || lower.find("_n.") != std::string::npos
+            || lower.find("_normal") != std::string::npos
+            || lower.find("normal") != std::string::npos
+            || lower.find("norm") != std::string::npos;
+    }
+
     struct MtlEntry
     {
         std::string DiffusePath;
@@ -42,6 +63,22 @@ namespace
         std::string DisplacementPath;
         SubMeshMaterial Material;
     };
+
+    void AssignAuxTexturePath(MtlEntry& entry, const std::string& path, bool fromDispTag)
+    {
+        if (path.empty()) return;
+
+        if (fromDispTag)
+        {
+            if (LooksLikeNormalMap(path) && entry.NormalPath.empty())
+                entry.NormalPath = path;
+            else
+                entry.DisplacementPath = path;
+            return;
+        }
+
+        entry.NormalPath = path;
+    }
 
     std::unordered_map<std::string, MtlEntry> LoadMtl(const std::string& mtlPath,
                                                         const std::string& baseDir)
@@ -57,14 +94,23 @@ namespace
             std::istringstream ss(line);
             std::string cmd;
             ss >> cmd;
+            cmd = ToLowerAscii(cmd);
 
             if (cmd == "newmtl") { ss >> cur; }
-            else if (cmd == "Kd" && !cur.empty()) { auto& m = result[cur].Material; ss >> m.Kd.x >> m.Kd.y >> m.Kd.z; }
-            else if (cmd == "Ks" && !cur.empty()) { auto& m = result[cur].Material; ss >> m.Ks.x >> m.Ks.y >> m.Ks.z; }
-            else if (cmd == "Ns" && !cur.empty()) { ss >> result[cur].Material.Ns; }
-            else if (cmd == "map_Kd" && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].DiffusePath = JoinPath(baseDir, t); }
-            else if ((cmd == "map_bump" || cmd == "bump" || cmd == "norm") && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].NormalPath = JoinPath(baseDir, t); }
-            else if (cmd == "disp" && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].DisplacementPath = JoinPath(baseDir, t); }
+            else if (cmd == "kd" && !cur.empty()) { auto& m = result[cur].Material; ss >> m.Kd.x >> m.Kd.y >> m.Kd.z; }
+            else if (cmd == "ks" && !cur.empty()) { auto& m = result[cur].Material; ss >> m.Ks.x >> m.Ks.y >> m.Ks.z; }
+            else if (cmd == "ns" && !cur.empty()) { ss >> result[cur].Material.Ns; }
+            else if (cmd == "map_kd" && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].DiffusePath = JoinPath(baseDir, t); }
+            else if ((cmd == "map_bump" || cmd == "bump" || cmd == "norm" || cmd == "map_kn") && !cur.empty())
+            {
+                std::string t = LastToken(ss);
+                if (!t.empty()) AssignAuxTexturePath(result[cur], JoinPath(baseDir, t), false);
+            }
+            else if ((cmd == "disp" || cmd == "map_disp") && !cur.empty())
+            {
+                std::string t = LastToken(ss);
+                if (!t.empty()) AssignAuxTexturePath(result[cur], JoinPath(baseDir, t), true);
+            }
         }
         return result;
     }

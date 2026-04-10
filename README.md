@@ -1,162 +1,65 @@
-# Lab-7 — DX12 Deferred Renderer + Frustum Culling + Octree
+# Mini Renderer Labs 4-8
 
-## Быстрый старт
+Единая учебная кодовая база на C++ / DirectX 12, в которой собраны лабораторные 4, 5, 6, 7 и 8.
 
-1. Скопировать все файлы из этой папки в папку проекта (перезаписать старые).
-2. Добавить в VS-проект новые `.cpp` файлы (Add → Existing Item):
-   `ImageLoader.cpp`, `ObjLoader.cpp`, `FrustumCuller.cpp`, `Octree.cpp`,
-   `SceneObjectManager.cpp`, `DeferredScene.cpp`, `ScatterScene.cpp`.
-3. Создать папку `Meshes/` рядом с `.exe`, положить туда `shrek.obj` / `donkey.obj`
-   (включая их папку `textures/`).
-4. Собрать и запустить — никаких новых внешних зависимостей нет.
+## Что есть сейчас
 
----
+- `Hand + Water` — deferred-сцена с normal mapping, displacement mapping, tessellation и water pass.
+- `Sponza Deferred` — deferred-сцена для lab 6 с несколькими типами света: directional, point, spot.
+- `Scatter 300` — сцена для lab 8 с большим числом объектов, frustum culling и octree.
+
+Сцены переключаются по `Tab` циклически:
+
+1. `Hand + Water`
+2. `Sponza Deferred`
+3. `Scatter 300`
 
 ## Управление
 
-| Клавиша | Действие |
-|---------|----------|
-| **Tab** | Переключить сцену: Hand+Water ↔ Scatter 300 |
-| **N** | (Hand) Normal mapping вкл/выкл |
-| **M** | (Hand) Displacement mapping вкл/выкл |
-| **F** | (Scatter) Frustum Culling вкл/выкл |
-| **O** | (Scatter) Octree ускорение вкл/выкл |
-| **ПКМ + мышь** | Look-around камеры |
-| **WASD** | Движение горизонтальное |
-| **Q / E** | Вниз / вверх |
-| **Shift** | Ускорение ×2.5 |
-| **Esc** | Выход |
+- `Tab` — следующая сцена
+- `N` — вкл/выкл normal mapping в deferred-сценах
+- `M` — вкл/выкл displacement mapping в `Hand + Water`
+- `F` — вкл/выкл frustum culling в `Scatter 300`
+- `O` — вкл/выкл octree-ускорение в `Scatter 300`
+- `ПКМ + мышь` — обзор камерой
+- `WASD`, `Q`, `E`, `Shift` — перемещение
+- `Esc` — выход
 
-Текущее состояние и количество видимых объектов отображается в заголовке окна.
+## Структура
 
----
+```text
+include/
+  assets/        ImageLoader, ObjLoader
+  core/          App, Window, Input, AssetPath, Dx12Helpers
+  rendering/     RenderingSystem, DeferredScene, ScatterScene, GBuffer
+  scene/         FrustumCuller, Octree, SceneObjectManager
+  third_party/   DirectXMath.h
 
-## Структура проекта
+src/
+  assets/
+  core/
+  rendering/
+  scene/
 
-```
-├── main.cpp                    — точка входа, создаёт App и запускает цикл
-│
-├── App.h / App.cpp             — прикладной слой
-│                                 владеет Window, Input, RenderingSystem
-│                                 обрабатывает ввод → команды рендереру
-│
-├── Window.h / Window.cpp       — обёртка над Win32 HWND и WNDCLASS
-├── Input.h  / Input.cpp        — простой опросник клавиш/мыши (массив bool[256])
-│
-├── RenderingSystem.h / .cpp    — оркестратор рендеринга
-│                                 владеет: Device, CommandQueue, SwapChain, BackBuffers
-│                                 делегирует кадр DeferredScene или ScatterScene
-│                                 не содержит логики рисования
-│
-│   ╔══════════════════════════════════════════════════════════╗
-│   ║  СЦЕНА 0 — Deferred (рука + вода)                       ║
-│   ╠══════════════════════════════════════════════════════════╣
-│   ║  DeferredScene.h / .cpp                                  ║
-│   ║    Geometry pass   → GBuffer (albedo+spec, normal+shin)  ║
-│   ║    Lighting pass   → fullscreen quad, deferred Blinn-Ph. ║
-│   ║    Water pass      → tessellated mesh, alpha blend        ║
-│   ║    Шейдеры читаются из Shaders.hlsl                      ║
-│   ║    Меш: Meshes/hand/handd.obj + MTL + текстуры           ║
-│   ╚══════════════════════════════════════════════════════════╝
-│
-│   ╔══════════════════════════════════════════════════════════╗
-│   ║  СЦЕНА 1 — Scatter (300 объектов)                        ║
-│   ╠══════════════════════════════════════════════════════════╣
-│   ║  ScatterScene.h / .cpp                                   ║
-│   ║    Forward Blinn-Phong, diffuse texture per submesh       ║
-│   ║    Три режима culling: OFF / Frustum / Frustum + Octree  ║
-│   ║    Шейдеры читаются из ScatterShaders.hlsl               ║
-│   ║    Меши: Meshes/shrek.obj, Meshes/donkey.obj             ║
-│   ╚══════════════════════════════════════════════════════════╝
-│
-├── GBuffer.h / .cpp            — два render target (albedo+spec / normal+shin)
-│                                 + depth stencil; управление барьерами ресурсов
-│
-├── Shaders.hlsl                — все шейдеры deferred сцены в одном файле
-│   GeometryVS/HS/DS/PS         → tessellated geometry pass
-│   LightingVS/PS               → fullscreen deferred lighting quad
-│   WaterVS/HS/DS/PS            → tessellated animated water
-│
-├── ScatterShaders.hlsl         — шейдеры scatter сцены (VS + PS)
-│
-├── ObjLoader.h / .cpp          — загрузка .obj + .mtl
-│   MeshVertex                  → {Pos, Normal, TexC, Tangent}
-│   SubMesh                     → {IndexStart, IndexCount, tex indices, material}
-│   MeshData                    → вершины, индексы, субмеши, пути к текстурам, AABB
-│   ComputeTangents()           → Gram-Schmidt tangent basis
-│
-├── ImageLoader.h / .cpp        — загрузка TGA (встроенный) и всех WIC форматов
-│   LoadImage(path, Image&)     → Image{Width, Height, BGRA[]}
-│
-├── AssetPath.h                 — инлайн-утилиты поиска ассета по нескольким путям
-│   ResolveAsset(name)          → абсолютный путь к файлу
-│   ToWide(string)              → wstring
-│
-├── FrustumCuller.h / .cpp      — AABB + 6-plane frustum
-│   AABB                        → {Min, Max}
-│   TransformAABB()             → трансформация AABB через world matrix
-│   Frustum::FromViewProj()     → Gribb-Hartmann row-major plane extraction
-│   Frustum::Intersects(AABB)   → positive-vertex тест
-│
-├── Octree.h / .cpp             — пространственное дерево
-│   Build(AABBs, sceneBounds)   → рекурсивное разбиение (depth=5, minPerLeaf=8)
-│   QueryVisible(frustum, out)  → обход дерева с отсечением по фрустуму
-│
-└── SceneObjectManager.h / .cpp — 300 инстансов (150 shrek + 150 donkey)
-    Initialize()                → LoadObj × 2, PlaceInstances()
-    PlaceInstances()            → random pos/rot/scale, фиксированный seed=42
-    BuildOctree()               → строит Octree по world-AABB инстансов
-    GetVisibleIndices()         → возвращает видимые индексы (3 режима)
+Shaders/
+  DeferredScene.hlsl
+  ScatterScene.hlsl
+
+Meshes/
+  hand/
+  sponza/
+  shrek/
+  donkey/
 ```
 
----
+## Краткая карта подсистем
 
-## Архитектура culling
+- `RenderingSystem` владеет DX12 device / swapchain / back buffers и делегирует кадр активной сцене.
+- `DeferredScene` использует `GBuffer`, geometry pass, lighting pass и опциональный water pass.
+- `ScatterScene` рисует 300 инстансов и использует `SceneObjectManager`, `FrustumCuller`, `Octree`.
+- `ObjLoader` читает `.obj + .mtl`, материалы и сопутствующие текстуры.
+- `Dx12Helpers` содержит общие DX12 helper-функции, чтобы не дублировать upload / buffer / texture boilerplate.
 
-```
-GetVisibleIndices(viewProj, useFrustum, useOctree)
-    │
-    ├─ useFrustum = false
-    │       └─ все 300 индексов
-    │
-    ├─ useFrustum = true, useOctree = false
-    │       └─ линейный перебор × 300
-    │              Frustum::Intersects(instance.WorldBounds)
-    │
-    └─ useFrustum = true, useOctree = true
-            └─ Octree::QueryVisible(frustum)
-                   └─ рекурсивно по дереву:
-                      если AABB узла вне frustum → отсекаем поддерево целиком
-                      если лист → проверяем каждый объект
-```
+## Ассеты
 
----
-
-## Размещение ассетов
-
-```
-<exe_dir>/
-├── Shaders.hlsl
-├── ScatterShaders.hlsl
-└── Meshes/
-    ├── hand/
-    │   ├── handd.obj
-    │   ├── handd.mtl
-    │   └── textures/  (diffuse, normal, displacement)
-    ├── shrek/
-    │   ├── shrek.obj
-    │   ├── shrek.mtl
-    │   └── textures/
-    └── donkey/
-        ├── donkey.obj
-        ├── donkey.mtl
-        └── textures/
-```
-
-`ResolveAsset()` ищет файлы в следующем порядке:
-1. Путь как есть (относительно рабочей директории)
-2. `assets/<name>`
-3. `<exe_dir>/<name>`
-4. `<exe_dir>/assets/<name>`
-5. `../<name>`
-6. `../../<name>`
+Шейдеры и меши ищутся через `ResolveAsset()` по нескольким относительным путям, поэтому проект остаётся устойчивым к запуску из `build/` или из корня репозитория.

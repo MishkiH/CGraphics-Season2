@@ -25,5 +25,6 @@ private:
     void QueryNode(int nodeIdx, const Frustum& frustum, std::vector<uint32_t>& out, std::vector<bool>& visited) const;
 
     std::vector<Node> m_nodes;
+    std::vector<AABB> m_objectBounds;
     uint32_t m_objectCount = 0;
 };

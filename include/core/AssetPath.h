@@ -22,7 +22,7 @@ inline std::string ResolveAsset(const std::string& name)
     std::string exe = (n > 0 && n < MAX_PATH) ? dirName(std::string(buf)) : std::string();
 
     for (const auto& c : {name, join("assets", name), join(exe, name),
-                          join(join(exe, "assets"), name), join("..", name)})
+                          join(join(exe, "assets"), name), join("..", name), join("../..", name)})
         if (exists(c)) return c;
     return name;
 }

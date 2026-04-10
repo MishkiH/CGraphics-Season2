@@ -2,7 +2,7 @@
 #include "DeferredScene.h"
 #include "ScatterScene.h"
 #include "AssetPath.h"
-#include <stdexcept>
+#include "Dx12Helpers.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -16,14 +16,96 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    void ThrowIfFailed(HRESULT hr, const char* msg)
+    DeferredScene::SceneLight MakeDirectionalLight(
+        const XMFLOAT3& direction,
+        const XMFLOAT3& color,
+        float intensity)
     {
-        if (FAILED(hr))
-        {
-            char buf[256];
-            std::snprintf(buf, sizeof buf, "%s (hr=0x%08X)", msg, (unsigned)hr);
-            throw std::runtime_error(buf);
-        }
+        DeferredScene::SceneLight light{};
+        light.LightType = DeferredScene::SceneLight::Type::Directional;
+        light.Direction = direction;
+        light.Color = color;
+        light.Intensity = intensity;
+        return light;
+    }
+
+    DeferredScene::SceneLight MakePointLight(
+        const XMFLOAT3& position,
+        const XMFLOAT3& color,
+        float intensity,
+        float range)
+    {
+        DeferredScene::SceneLight light{};
+        light.LightType = DeferredScene::SceneLight::Type::Point;
+        light.Position = position;
+        light.Color = color;
+        light.Intensity = intensity;
+        light.Range = range;
+        return light;
+    }
+
+    DeferredScene::SceneLight MakeSpotLight(
+        const XMFLOAT3& position,
+        const XMFLOAT3& direction,
+        const XMFLOAT3& color,
+        float intensity,
+        float range,
+        float innerAngleDeg,
+        float outerAngleDeg)
+    {
+        DeferredScene::SceneLight light{};
+        light.LightType = DeferredScene::SceneLight::Type::Spot;
+        light.Position = position;
+        light.Direction = direction;
+        light.Color = color;
+        light.Intensity = intensity;
+        light.Range = range;
+        light.InnerConeDegrees = innerAngleDeg;
+        light.OuterConeDegrees = outerAngleDeg;
+        return light;
+    }
+
+    DeferredScene::SceneOptions MakeHandSceneOptions()
+    {
+        DeferredScene::SceneOptions options;
+        options.MeshPath = ResolveAsset("Meshes/hand/handd.obj");
+        options.EnableWater = true;
+        options.EnableNormalMapping = true;
+        options.EnableDisplacement = true;
+        options.AmbientColor = {0.3f, 0.3f, 0.3f};
+        options.Lights.push_back(MakeDirectionalLight(
+            XMFLOAT3{0.4f, -1.f, 0.3f},
+            XMFLOAT3{1.f, 0.98f, 0.9f},
+            1.8f));
+        return options;
+    }
+
+    DeferredScene::SceneOptions MakeSponzaSceneOptions()
+    {
+        DeferredScene::SceneOptions options;
+        options.MeshPath = ResolveAsset("Meshes/sponza/sponza.obj");
+        options.EnableWater = false;
+        options.EnableNormalMapping = true;
+        options.EnableDisplacement = false;
+        options.AmbientColor = {0.055f, 0.055f, 0.06f};
+        options.Lights.push_back(MakeDirectionalLight(
+            XMFLOAT3{0.4f, -1.f, 0.3f},
+            XMFLOAT3{0.6f, 0.6f, 1.0f},
+            2.f));
+        options.Lights.push_back(MakePointLight(
+            XMFLOAT3{11.f, 2.f, -0.3f},
+            XMFLOAT3{1.f, 0.1f, 0.1f},
+            3.5f,
+            4.5f));
+        options.Lights.push_back(MakeSpotLight(
+            XMFLOAT3{-10.f, 16.3f, -0.4f},
+            XMFLOAT3{0.6f, -1.f, 0.f},
+            XMFLOAT3{0.2f, 1.f, 0.2f},
+            7.f,
+            19.f,
+            7.f,
+            19.f));
+        return options;
     }
 }
 
@@ -39,12 +121,12 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
 #endif
 
-    ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&m_factory)), "CreateDXGIFactory1");
+    dx12::ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&m_factory)), "CreateDXGIFactory1");
     if (!CreateDevice()) return false;
     if (!CreateSwapChain()) return false;
     if (!CreateBackBufferRTVs()) return false;
 
-    ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)), "CreateFence");
+    dx12::ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)), "CreateFence");
     m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!m_fenceEvent) throw std::runtime_error("CreateEvent failed");
 
@@ -55,14 +137,30 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     SetCamera(defaultEye, 0.f, 0.f);
     XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(XM_PI * 0.25f, (float)width / height, 0.05f, 1000.f));
 
-    m_deferredScene = std::make_unique<DeferredScene>();
-    if (!m_deferredScene->Initialize(m_device.Get(), m_cmdQueue.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, width, height))
+    m_handScene = std::make_unique<DeferredScene>();
+    if (!m_handScene->Initialize(
+            m_device.Get(),
+            m_cmdQueue.Get(),
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            width,
+            height,
+            MakeHandSceneOptions()))
+        return false;
+
+    m_sponzaScene = std::make_unique<DeferredScene>();
+    if (!m_sponzaScene->Initialize(
+            m_device.Get(),
+            m_cmdQueue.Get(),
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            width,
+            height,
+            MakeSponzaSceneOptions()))
         return false;
 
     m_scatterScene = std::make_unique<ScatterScene>();
     if (!m_scatterScene->Initialize(m_device.Get(), m_cmdQueue.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, width, height,
                      ResolveAsset("Meshes/shrek/shrek.obj"), ResolveAsset("Meshes/donkey/Donkey.obj")))
-    m_scatterScene.reset();
+        return false;
 
     m_initialized = true;
     return true;
@@ -71,7 +169,8 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
 void RenderingSystem::Shutdown()
 {
     FlushGpu();
-    if (m_deferredScene) { m_deferredScene->Shutdown(); m_deferredScene.reset(); }
+    if (m_handScene) { m_handScene->Shutdown(); m_handScene.reset(); }
+    if (m_sponzaScene) { m_sponzaScene->Shutdown(); m_sponzaScene.reset(); }
     if (m_scatterScene) { m_scatterScene->Shutdown(); m_scatterScene.reset(); }
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
 }
@@ -80,11 +179,12 @@ void RenderingSystem::Draw(float dt)
 {
     if (!m_initialized) return;
 
-    m_deferredScene->SetCamera(m_view, m_proj, m_eye);
+    if (m_handScene) m_handScene->SetCamera(m_view, m_proj, m_eye);
+    if (m_sponzaScene) m_sponzaScene->SetCamera(m_view, m_proj, m_eye);
 
     BeginFrame();
 
-    if (m_sceneMode == 1 && m_scatterScene)
+    if (m_sceneMode == ScatterSceneMode && m_scatterScene)
     {
         const float clearColor[4] = {0.08f, 0.10f, 0.13f, 1.f};
         m_cmdList->ClearRenderTargetView(CurrentBackBufferRTV(), clearColor, 0, nullptr);
@@ -94,9 +194,15 @@ void RenderingSystem::Draw(float dt)
         m_scatterScene->RecordCommands(m_cmdList.Get(), viewProj, m_eye,
                                         CurrentBackBufferRTV(), m_viewport, m_scissorRect);
     }
+    else if (m_sceneMode == SponzaSceneMode && m_sponzaScene)
+    {
+        m_sponzaScene->RecordCommands(m_cmdList.Get(), CurrentBackBufferRTV(),
+                                       m_viewport, m_scissorRect, dt);
+    }
     else
     {
-        m_deferredScene->RecordCommands(m_cmdList.Get(), CurrentBackBufferRTV(),
+        if (m_handScene)
+            m_handScene->RecordCommands(m_cmdList.Get(), CurrentBackBufferRTV(),
                                          m_viewport, m_scissorRect, dt);
     }
 
@@ -111,7 +217,7 @@ void RenderingSystem::OnResize(uint32_t width, uint32_t height)
     FlushGpu();
     for (auto& b : m_backBuffers) b.Reset();
 
-    ThrowIfFailed(m_swapChain->ResizeBuffers(SwapChainBufferCount, width, height,
+    dx12::ThrowIfFailed(m_swapChain->ResizeBuffers(SwapChainBufferCount, width, height,
                     DXGI_FORMAT_R8G8B8A8_UNORM, 0), "ResizeBuffers");
     m_backBufferIndex = 0;
     CreateBackBufferRTVs();
@@ -120,7 +226,8 @@ void RenderingSystem::OnResize(uint32_t width, uint32_t height)
     m_scissorRect = {0, 0, (LONG)width, (LONG)height};
     XMStoreFloat4x4(&m_proj, XMMatrixPerspectiveFovLH(XM_PI * 0.25f, (float)width / height, 0.05f, 1000.f));
 
-    if (m_deferredScene) m_deferredScene->OnResize(m_device.Get(), width, height);
+    if (m_handScene) m_handScene->OnResize(m_device.Get(), width, height);
+    if (m_sponzaScene) m_sponzaScene->OnResize(m_device.Get(), width, height);
     if (m_scatterScene) m_scatterScene->OnResize(m_device.Get(), width, height);
 }
 
@@ -135,7 +242,14 @@ void RenderingSystem::SetCamera(const XMFLOAT3& eye, float yaw, float pitch)
 
 void RenderingSystem::SetRenderMode(int mode)
 {
-    if (m_deferredScene) m_deferredScene->SetRenderMode(mode);
+    if (m_handScene) m_handScene->SetRenderMode(mode);
+    if (m_sponzaScene) m_sponzaScene->SetRenderMode(mode);
+}
+
+void RenderingSystem::SetSceneMode(int mode)
+{
+    if (mode < 0) mode = 0;
+    m_sceneMode = mode % SceneModeCount;
 }
 
 void RenderingSystem::ToggleFrustumCulling()
@@ -165,8 +279,8 @@ uint32_t RenderingSystem::ScatterVisibleCount() const
 
 void RenderingSystem::BeginFrame()
 {
-    ThrowIfFailed(m_cmdAlloc->Reset(), "Reset allocator");
-    ThrowIfFailed(m_cmdList->Reset(m_cmdAlloc.Get(), nullptr), "Reset list");
+    dx12::ThrowIfFailed(m_cmdAlloc->Reset(), "Reset allocator");
+    dx12::ThrowIfFailed(m_cmdList->Reset(m_cmdAlloc.Get(), nullptr), "Reset list");
 
     D3D12_RESOURCE_BARRIER b{};
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -187,10 +301,10 @@ void RenderingSystem::EndFrame()
     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     m_cmdList->ResourceBarrier(1, &b);
 
-    ThrowIfFailed(m_cmdList->Close(), "Close command list");
+    dx12::ThrowIfFailed(m_cmdList->Close(), "Close command list");
     ID3D12CommandList* lists[] = {m_cmdList.Get()};
     m_cmdQueue->ExecuteCommandLists(1, lists);
-    ThrowIfFailed(m_swapChain->Present(0, 0), "Present");
+    dx12::ThrowIfFailed(m_swapChain->Present(0, 0), "Present");
     m_backBufferIndex = (m_backBufferIndex + 1) % SwapChainBufferCount;
     FlushGpu();
 }
@@ -198,10 +312,10 @@ void RenderingSystem::EndFrame()
 void RenderingSystem::FlushGpu()
 {
     const uint64_t val = ++m_fenceValue;
-    ThrowIfFailed(m_cmdQueue->Signal(m_fence.Get(), val), "Signal");
+    dx12::ThrowIfFailed(m_cmdQueue->Signal(m_fence.Get(), val), "Signal");
     if (m_fence->GetCompletedValue() < val)
     {
-        ThrowIfFailed(m_fence->SetEventOnCompletion(val, m_fenceEvent), "SetEventOnCompletion");
+        dx12::ThrowIfFailed(m_fence->SetEventOnCompletion(val, m_fenceEvent), "SetEventOnCompletion");
         WaitForSingleObject(m_fenceEvent, INFINITE);
     }
 }
@@ -212,14 +326,14 @@ bool RenderingSystem::CreateDevice()
     if (FAILED(hr))
     {
         ComPtr<IDXGIAdapter> warp;
-        ThrowIfFailed(m_factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)), "EnumWarpAdapter");
-        ThrowIfFailed(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device)), "D3D12CreateDevice (WARP)");
+        dx12::ThrowIfFailed(m_factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)), "EnumWarpAdapter");
+        dx12::ThrowIfFailed(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device)), "D3D12CreateDevice (WARP)");
     }
     D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
-    ThrowIfFailed(m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_cmdQueue)), "CreateCommandQueue");
-    ThrowIfFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_cmdAlloc)), "CreateCommandAllocator");
-    ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&m_cmdList)), "CreateCommandList");
-    ThrowIfFailed(m_cmdList->Close(), "Initial cmdList close");
+    dx12::ThrowIfFailed(m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_cmdQueue)), "CreateCommandQueue");
+    dx12::ThrowIfFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_cmdAlloc)), "CreateCommandAllocator");
+    dx12::ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_cmdAlloc.Get(), nullptr, IID_PPV_ARGS(&m_cmdList)), "CreateCommandList");
+    dx12::ThrowIfFailed(m_cmdList->Close(), "Initial cmdList close");
     return true;
 }
 
@@ -232,7 +346,7 @@ bool RenderingSystem::CreateSwapChain()
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.OutputWindow = m_hwnd; sd.SampleDesc = {1, 0};
     sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    ThrowIfFailed(m_factory->CreateSwapChain(m_cmdQueue.Get(), &sd, m_swapChain.GetAddressOf()), "CreateSwapChain");
+    dx12::ThrowIfFailed(m_factory->CreateSwapChain(m_cmdQueue.Get(), &sd, m_swapChain.GetAddressOf()), "CreateSwapChain");
     return true;
 }
 
@@ -244,12 +358,12 @@ bool RenderingSystem::CreateBackBufferRTVs()
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         hd.NumDescriptors = SwapChainBufferCount;
-        ThrowIfFailed(m_device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_rtvHeap)), "RTV heap");
+        dx12::ThrowIfFailed(m_device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_rtvHeap)), "RTV heap");
     }
     D3D12_CPU_DESCRIPTOR_HANDLE h = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
     for (uint32_t i = 0; i < SwapChainBufferCount; ++i)
     {
-        ThrowIfFailed(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])), "GetBuffer");
+        dx12::ThrowIfFailed(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])), "GetBuffer");
         m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, h);
         h.ptr += m_rtvStride;
     }

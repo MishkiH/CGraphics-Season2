@@ -6,6 +6,7 @@ void Octree::Build(const std::vector<AABB>& worldBounds, const AABB& sceneBounds
 {
     m_nodes.clear();
     m_objectCount = (uint32_t)worldBounds.size();
+    m_objectBounds = worldBounds;
     if (m_objectCount == 0) return;
 
     Node root;
@@ -66,6 +67,7 @@ void Octree::Subdivide(int idx, const std::vector<AABB>& bounds,
 
 void Octree::QueryVisible(const Frustum& frustum, std::vector<uint32_t>& out) const
 {
+    out.clear();
     if (m_nodes.empty()) return;
     std::vector<bool> visited(m_objectCount, false);
     QueryNode(0, frustum, out, visited);
@@ -80,7 +82,12 @@ void Octree::QueryNode(int idx, const Frustum& frustum,
     if (node.IsLeaf())
     {
         for (uint32_t oi : node.Objects)
-            if (!visited[oi]) { visited[oi] = true; out.push_back(oi); }
+        {
+            if (visited[oi]) continue;
+            if (!frustum.Intersects(m_objectBounds[oi])) continue;
+            visited[oi] = true;
+            out.push_back(oi);
+        }
         return;
     }
 

@@ -6,26 +6,34 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(dx12_optimization
-    App.cpp
-    DeferredScene.cpp
-    FrustumCuller.cpp
-    GBuffer.cpp
-    ImageLoader.cpp
-    Input.cpp
-    main.cpp
-    ObjLoader.cpp
-    Octree.cpp
-    RenderingSystem.cpp
-    ScatterScene.cpp
-    SceneObjectManager.cpp
-    Window.cpp
+    src/core/App.cpp
+    src/core/Input.cpp
+    src/core/main.cpp
+    src/core/Window.cpp
+    src/rendering/DeferredScene.cpp
+    src/rendering/GBuffer.cpp
+    src/rendering/RenderingSystem.cpp
+    src/rendering/ScatterScene.cpp
+    src/assets/ImageLoader.cpp
+    src/assets/ObjLoader.cpp
+    src/scene/FrustumCuller.cpp
+    src/scene/Octree.cpp
+    src/scene/SceneObjectManager.cpp
 )
 
 target_compile_definitions(dx12_optimization PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(dx12_optimization PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rendering
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/assets
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/scene
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/third_party
+)
 
 set_target_properties(dx12_optimization PROPERTIES WIN32_EXECUTABLE TRUE)
 
 target_link_libraries(dx12_optimization PRIVATE
     user32 gdi32
     dxgi d3d12
+    d3dcompiler dxguid windowscodecs ole32
 )

@@ -32,7 +32,9 @@ public:
 
     DXGI_FORMAT GetAlbedoSpecFormat() const { return DXGI_FORMAT_R8G8B8A8_UNORM; }
     DXGI_FORMAT GetNormalFormat() const { return DXGI_FORMAT_R16G16B16A16_FLOAT; }
+    DXGI_FORMAT GetDepthResourceFormat() const { return DXGI_FORMAT_R32_TYPELESS; }
     DXGI_FORMAT GetDepthStencilFormat() const { return DXGI_FORMAT_D32_FLOAT; }
+    DXGI_FORMAT GetDepthSrvFormat() const { return DXGI_FORMAT_R32_FLOAT; }
 
 private:
     void CreateResources(ID3D12Device* device);

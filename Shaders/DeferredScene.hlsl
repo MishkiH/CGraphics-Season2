@@ -7,6 +7,7 @@ cbuffer PassCB : register(b0)
     float4 gRTSize;
     float4 gTessParams;
     float4 gDispParams;
+    float4 gUvOffsetTiling;
 };
 
 cbuffer MaterialCB : register(b2)
@@ -115,6 +116,7 @@ DsOut GeometryDS(
     float3 normalW = bary.x*patch[0].NormalW + bary.y*patch[1].NormalW + bary.z*patch[2].NormalW;
     float3 tangentW= bary.x*patch[0].TangentW+ bary.y*patch[1].TangentW+ bary.z*patch[2].TangentW;
     float2 texC = bary.x*patch[0].TexC   + bary.y*patch[1].TexC   + bary.z*patch[2].TexC;
+    float2 uv = texC * gUvOffsetTiling.zw + gUvOffsetTiling.xy;
 
     normalW = normalize(normalW);
     tangentW = normalize(tangentW);
@@ -122,7 +124,7 @@ DsOut GeometryDS(
     int mode = (int)gDispParams.z;
     if (mode == 2 || mode == 3)
     {
-        float disp = gDisplacementMap.SampleLevel(gSampler, texC, 0).r;
+        float disp = gDisplacementMap.SampleLevel(gSampler, uv, 0).r;
         disp = max(0.0, disp * gDispParams.x + gDispParams.y);
         posW += normalW * disp;
     }
@@ -131,7 +133,7 @@ DsOut GeometryDS(
     dout.PosW = posW;
     dout.NormalW = normalW;
     dout.TangentW= tangentW;
-    dout.TexC = texC;
+    dout.TexC = uv;
     return dout;
 }
 

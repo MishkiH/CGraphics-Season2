@@ -19,6 +19,15 @@ class ScatterScene;
 class RenderingSystem
 {
 public:
+    enum SceneMode : int
+    {
+        HandSceneMode = 0,
+        SponzaSceneMode = 1,
+        ScatterSceneMode = 2,
+    };
+
+    static constexpr int SceneModeCount = 3;
+
     RenderingSystem();
     ~RenderingSystem();
 
@@ -28,8 +37,7 @@ public:
     void Draw(float dt);
     void SetCamera(const DirectX::XMFLOAT3& eye, float yaw, float pitch);
 
-    // 0 = deferred (hand + water), 1 = scatter (300 objects)
-    void SetSceneMode(int mode) { m_sceneMode = mode; }
+    void SetSceneMode(int mode);
     int GetSceneMode() const { return m_sceneMode; }
 
     void SetRenderMode(int mode);
@@ -81,6 +89,7 @@ private:
     DirectX::XMFLOAT4X4 m_proj{};
     DirectX::XMFLOAT3 m_eye{};
 
-    std::unique_ptr<DeferredScene> m_deferredScene;
+    std::unique_ptr<DeferredScene> m_handScene;
+    std::unique_ptr<DeferredScene> m_sponzaScene;
     std::unique_ptr<ScatterScene> m_scatterScene;
 };

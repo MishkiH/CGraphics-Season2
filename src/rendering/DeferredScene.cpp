@@ -3,7 +3,7 @@
 #include "ObjLoader.h"
 #include "ImageLoader.h"
 #include "AssetPath.h"
-#include <stdexcept>
+#include "Dx12Helpers.h"
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -13,151 +13,47 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    void ThrowIfFailed(HRESULT hr, const char* msg)
+    XMFLOAT3 NormalizeOrFallback(const XMFLOAT3& v, const XMFLOAT3& fallback)
     {
-        if (FAILED(hr))
-        {
-            char buf[256];
-            std::snprintf(buf, sizeof buf, "%s (hr=0x%08X)", msg, (unsigned)hr);
-            throw std::runtime_error(buf);
-        }
-    }
+        const XMVECTOR vec = XMLoadFloat3(&v);
+        if (XMVectorGetX(XMVector3LengthSq(vec)) < 1e-6f)
+            return fallback;
 
-    uint32_t AlignCb(uint32_t size) { return (size + 255u) & ~255u; }
-
-    D3D12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE type)
-    {
-        D3D12_HEAP_PROPERTIES p{};
-        p.Type = type;
-        p.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-        p.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-        p.CreationNodeMask = p.VisibleNodeMask = 1;
-        return p;
-    }
-
-    D3D12_RESOURCE_DESC BufDesc(UINT64 size)
-    {
-        D3D12_RESOURCE_DESC d{};
-        d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        d.Width = size; d.Height = d.DepthOrArraySize = d.MipLevels = 1;
-        d.SampleDesc.Count = 1; d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        return d;
-    }
-
-    D3D12_RESOURCE_DESC Tex2DDesc(uint32_t w, uint32_t h, DXGI_FORMAT fmt,
-                                   D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE)
-    {
-        D3D12_RESOURCE_DESC d{};
-        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        d.Width = w; d.Height = h; d.DepthOrArraySize = d.MipLevels = 1;
-        d.Format = fmt; d.SampleDesc.Count = 1; d.Flags = flags;
-        return d;
-    }
-
-    ComPtr<ID3D12Resource> CreateDefaultBuffer(ID3D12Device* device,
-                                               ID3D12GraphicsCommandList* cmdList,
-                                               const void* data, UINT64 size,
-                                               ComPtr<ID3D12Resource>& uploadBuf)
-    {
-        auto defHP = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-        auto upHP = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-        auto bd = BufDesc(size);
-
-        ComPtr<ID3D12Resource> gpuBuf;
-        ThrowIfFailed(device->CreateCommittedResource(&defHP, D3D12_HEAP_FLAG_NONE, &bd,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&gpuBuf)), "default buf");
-        ThrowIfFailed(device->CreateCommittedResource(&upHP, D3D12_HEAP_FLAG_NONE, &bd,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuf)), "upload buf");
-
-        void* mapped = nullptr; D3D12_RANGE rr{0, 0};
-        uploadBuf->Map(0, &rr, &mapped);
-        std::memcpy(mapped, data, size);
-        uploadBuf->Unmap(0, nullptr);
-
-        cmdList->CopyBufferRegion(gpuBuf.Get(), 0, uploadBuf.Get(), 0, size);
-
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = gpuBuf.Get();
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_INDEX_BUFFER;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &b);
-        return gpuBuf;
-    }
-
-    void UploadTexture(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                       ID3D12Resource* tex, const Image& img,
-                       std::vector<ComPtr<ID3D12Resource>>& uploads)
-    {
-        auto upHP = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
-        auto texDesc = Tex2DDesc(img.Width, img.Height, DXGI_FORMAT_B8G8R8A8_UNORM);
-
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{}; UINT64 totalBytes = 0;
-        device->GetCopyableFootprints(&texDesc, 0, 1, 0, &fp, nullptr, nullptr, &totalBytes);
-
-        ComPtr<ID3D12Resource> upload;
-        auto bd = BufDesc(totalBytes);
-        ThrowIfFailed(device->CreateCommittedResource(&upHP, D3D12_HEAP_FLAG_NONE, &bd,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)), "tex upload");
-
-        void* mapped = nullptr; D3D12_RANGE rr{0, 0};
-        upload->Map(0, &rr, &mapped);
-        for (uint32_t y = 0; y < img.Height; ++y)
-            std::memcpy((uint8_t*)mapped + y * fp.Footprint.RowPitch,
-                        img.BGRA.data() + y * img.Width * 4u, img.Width * 4u);
-        upload->Unmap(0, nullptr);
-
-        D3D12_TEXTURE_COPY_LOCATION dst{tex, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-        dst.SubresourceIndex = 0;
-        D3D12_TEXTURE_COPY_LOCATION src{upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
-        src.PlacedFootprint = fp;
-        cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-
-        D3D12_RESOURCE_BARRIER b{};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        b.Transition.pResource = tex;
-        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        b.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &b);
-        uploads.push_back(std::move(upload));
-    }
-
-    void FlushUpload(ID3D12Device* device, ID3D12CommandQueue* queue,
-                     ID3D12GraphicsCommandList* list)
-    {
-        ThrowIfFailed(list->Close(), "close upload list");
-        ID3D12CommandList* ls[] = {list};
-        queue->ExecuteCommandLists(1, ls);
-
-        ComPtr<ID3D12Fence> fence;
-        ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "upload fence");
-        queue->Signal(fence.Get(), 1);
-        HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        fence->SetEventOnCompletion(1, evt);
-        WaitForSingleObject(evt, INFINITE);
-        CloseHandle(evt);
+        XMFLOAT3 out{};
+        XMStoreFloat3(&out, XMVector3Normalize(vec));
+        return out;
     }
 }
 
 bool DeferredScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue,
-                                DXGI_FORMAT backBufferFmt, uint32_t width, uint32_t height)
+                                DXGI_FORMAT backBufferFmt, uint32_t width, uint32_t height,
+                                const SceneOptions& options)
 {
+    m_options = options;
+    if (m_options.MeshPath.empty())
+        return false;
+    if (m_options.Lights.empty())
+    {
+        SceneLight fallbackLight{};
+        fallbackLight.Direction = {0.4f, -1.f, 0.3f};
+        fallbackLight.Intensity = 1.8f;
+        m_options.Lights.push_back(fallbackLight);
+    }
+
     XMStoreFloat4x4(&m_view, XMMatrixIdentity());
     XMStoreFloat4x4(&m_proj, XMMatrixIdentity());
 
     ComPtr<ID3D12CommandAllocator> uploadAlloc;
     ComPtr<ID3D12GraphicsCommandList> uploadList;
-    ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&uploadAlloc)), "deferred upload alloc");
-    ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, uploadAlloc.Get(), nullptr, IID_PPV_ARGS(&uploadList)), "deferred upload list");
+    dx12::ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&uploadAlloc)), "deferred upload alloc");
+    dx12::ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, uploadAlloc.Get(), nullptr, IID_PPV_ARGS(&uploadList)), "deferred upload list");
 
     std::vector<ComPtr<ID3D12Resource>> uploads;
 
     if (!BuildShaders(device)) return false;
     if (!BuildRootSignature(device)) return false;
-    if (!BuildHandGeometry(device, uploadList.Get(), uploads)) return false;
-    if (!BuildWaterGeometry(device, uploadList.Get(), uploads)) return false;
+    if (!BuildSceneGeometry(device, uploadList.Get(), uploads)) return false;
+    if (m_options.EnableWater && !BuildWaterGeometry(device, uploadList.Get(), uploads)) return false;
     if (!BuildConstantBuffers(device)) return false;
 
     m_gBuffer = std::make_unique<GBuffer>();
@@ -165,7 +61,7 @@ bool DeferredScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueu
 
     if (!BuildPSOs(device, backBufferFmt)) return false;
 
-    FlushUpload(device, cmdQueue, uploadList.Get());
+    dx12::ExecuteAndWait(device, cmdQueue, uploadList.Get());
     return true;
 }
 
@@ -245,6 +141,7 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->DrawInstanced(3, 1, 0, 0);
 
+    if (m_options.EnableWater && m_waterIndexCount > 0)
     {
         D3D12_CPU_DESCRIPTOR_HANDLE dsvRO = m_gBuffer->GetDsvReadOnly();
         cmdList->OMSetRenderTargets(1, &backBufferRtv, FALSE, &dsvRO);
@@ -277,13 +174,13 @@ bool DeferredScene::BuildShaders(ID3D12Device*)
     flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
     ComPtr<ID3DBlob> errors;
-    std::wstring sp = ToWide(ResolveAsset("Shaders.hlsl"));
+    std::wstring sp = ToWide(ResolveAsset("Shaders/DeferredScene.hlsl"));
 
     auto compile = [&](const char* entry, const char* target, ComPtr<ID3DBlob>& blob) -> bool {
         errors.Reset();
         HRESULT hr = D3DCompileFromFile(sp.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
                                         entry, target, flags, 0, &blob, &errors);
-        if (FAILED(hr)) { if (errors) throw std::runtime_error((const char*)errors->GetBufferPointer()); ThrowIfFailed(hr, entry); }
+        if (FAILED(hr)) { if (errors) throw std::runtime_error((const char*)errors->GetBufferPointer()); dx12::ThrowIfFailed(hr, entry); }
         return true;
     };
 
@@ -402,7 +299,7 @@ bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
     geoPso.RTVFormats[1] = m_gBuffer->GetNormalFormat();
     geoPso.DSVFormat = m_gBuffer->GetDepthStencilFormat();
     geoPso.SampleDesc = {1, 0};
-    ThrowIfFailed(device->CreateGraphicsPipelineState(&geoPso, IID_PPV_ARGS(&m_geometryPSO)), "Geometry PSO");
+    dx12::ThrowIfFailed(device->CreateGraphicsPipelineState(&geoPso, IID_PPV_ARGS(&m_geometryPSO)), "Geometry PSO");
 
     D3D12_DEPTH_STENCIL_DESC noDepth{};
     D3D12_GRAPHICS_PIPELINE_STATE_DESC litPso{};
@@ -414,7 +311,7 @@ bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
     litPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     litPso.NumRenderTargets = 1; litPso.RTVFormats[0] = backBufferFmt;
     litPso.DSVFormat = DXGI_FORMAT_UNKNOWN; litPso.SampleDesc = {1, 0};
-    ThrowIfFailed(device->CreateGraphicsPipelineState(&litPso, IID_PPV_ARGS(&m_lightingPSO)), "Lighting PSO");
+    dx12::ThrowIfFailed(device->CreateGraphicsPipelineState(&litPso, IID_PPV_ARGS(&m_lightingPSO)), "Lighting PSO");
 
     D3D12_RENDER_TARGET_BLEND_DESC waterBlend{};
     waterBlend.BlendEnable = TRUE;
@@ -439,16 +336,16 @@ bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
     waterPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
     waterPso.NumRenderTargets = 1; waterPso.RTVFormats[0] = backBufferFmt;
     waterPso.DSVFormat = m_gBuffer->GetDepthStencilFormat(); waterPso.SampleDesc = {1, 0};
-    ThrowIfFailed(device->CreateGraphicsPipelineState(&waterPso, IID_PPV_ARGS(&m_waterPSO)), "Water PSO");
+    dx12::ThrowIfFailed(device->CreateGraphicsPipelineState(&waterPso, IID_PPV_ARGS(&m_waterPSO)), "Water PSO");
     return true;
 }
 
-bool DeferredScene::BuildHandGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-                                       std::vector<ComPtr<ID3D12Resource>>& uploads)
+bool DeferredScene::BuildSceneGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
+                                        std::vector<ComPtr<ID3D12Resource>>& uploads)
 {
     MeshData model;
-    if (!LoadObj(ResolveAsset("Meshes/hand/handd.obj"), model))
-        throw std::runtime_error("Failed to load hand model");
+    if (!LoadObj(m_options.MeshPath, model))
+        throw std::runtime_error("Failed to load deferred scene mesh");
 
     const uint32_t nD = (uint32_t)model.DiffusePaths.size();
     const uint32_t nN = (uint32_t)model.NormalPaths.size();
@@ -460,15 +357,16 @@ bool DeferredScene::BuildHandGeometry(ID3D12Device* device, ID3D12GraphicsComman
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
     hd.NumDescriptors = total; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    ThrowIfFailed(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_textureHeap)), "tex heap");
+    dx12::ThrowIfFailed(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_textureHeap)), "tex heap");
     m_textures.resize(total);
 
-    auto defHP = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
     auto createTex = [&](uint32_t slot, uint32_t w, uint32_t h) {
-        auto td = Tex2DDesc(w, h, DXGI_FORMAT_B8G8R8A8_UNORM);
-        ThrowIfFailed(device->CreateCommittedResource(&defHP, D3D12_HEAP_FLAG_NONE, &td,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_textures[slot])), "tex");
+        m_textures[slot] = dx12::CreateTexture2D(
+            device,
+            w,
+            h,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            D3D12_RESOURCE_STATE_COPY_DEST);
     };
 
     auto loadGroup = [](const std::vector<std::string>& paths) {
@@ -488,10 +386,10 @@ bool DeferredScene::BuildHandGeometry(ID3D12Device* device, ID3D12GraphicsComman
     auto uploadGroup = [&](uint32_t base, uint32_t count, const Image& fallback,
                            const std::vector<Image>& imgs, const std::vector<bool>& ok) {
         createTex(base, fallback.Width, fallback.Height);
-        UploadTexture(device, cmdList, m_textures[base].Get(), fallback, uploads);
+        dx12::UploadTexture2D(device, cmdList, m_textures[base].Get(), fallback, uploads);
         for (uint32_t i = 1; i < count; ++i)
         {
-            if (ok[i]) { createTex(base + i, imgs[i].Width, imgs[i].Height); UploadTexture(device, cmdList, m_textures[base + i].Get(), imgs[i], uploads); }
+            if (ok[i]) { createTex(base + i, imgs[i].Width, imgs[i].Height); dx12::UploadTexture2D(device, cmdList, m_textures[base + i].Get(), imgs[i], uploads); }
             else m_textures[base + i] = m_textures[base];
         }
     };
@@ -530,8 +428,8 @@ bool DeferredScene::BuildHandGeometry(ID3D12Device* device, ID3D12GraphicsComman
     const UINT64 vbSz = model.Vertices.size() * sizeof(MeshVertex);
     const UINT64 ibSz = model.Indices.size() * sizeof(uint32_t);
     ComPtr<ID3D12Resource> vbUp, ibUp;
-    m_vertexBuffer = CreateDefaultBuffer(device, cmdList, model.Vertices.data(), vbSz, vbUp);
-    m_indexBuffer = CreateDefaultBuffer(device, cmdList, model.Indices.data(), ibSz, ibUp);
+    m_vertexBuffer = dx12::CreateDefaultBuffer(device, cmdList, model.Vertices.data(), vbSz, vbUp);
+    m_indexBuffer = dx12::CreateDefaultBuffer(device, cmdList, model.Indices.data(), ibSz, ibUp);
     uploads.push_back(vbUp); uploads.push_back(ibUp);
 
     m_vbv = {m_vertexBuffer->GetGPUVirtualAddress(), (UINT)vbSz, sizeof(MeshVertex)};
@@ -553,8 +451,8 @@ bool DeferredScene::BuildWaterGeometry(ID3D12Device* device, ID3D12GraphicsComma
     m_waterIndexCount = 6;
 
     ComPtr<ID3D12Resource> vbUp, ibUp;
-    m_waterVertexBuffer = CreateDefaultBuffer(device, cmdList, verts, sizeof(verts), vbUp);
-    m_waterIndexBuffer = CreateDefaultBuffer(device, cmdList, indices, sizeof(indices), ibUp);
+    m_waterVertexBuffer = dx12::CreateDefaultBuffer(device, cmdList, verts, sizeof(verts), vbUp);
+    m_waterIndexBuffer = dx12::CreateDefaultBuffer(device, cmdList, indices, sizeof(indices), ibUp);
     uploads.push_back(vbUp); uploads.push_back(ibUp);
 
     m_waterVBV = {m_waterVertexBuffer->GetGPUVirtualAddress(), sizeof(verts), sizeof(MeshVertex)};
@@ -564,12 +462,12 @@ bool DeferredScene::BuildWaterGeometry(ID3D12Device* device, ID3D12GraphicsComma
 
 bool DeferredScene::BuildConstantBuffers(ID3D12Device* device)
 {
-    auto upHP = HeapProps(D3D12_HEAP_TYPE_UPLOAD);
+    auto upHP = dx12::HeapProperties(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_RANGE rr{0, 0};
 
     auto mkCB = [&](uint32_t sz, ComPtr<ID3D12Resource>& buf, uint8_t*& ptr) -> bool {
-        auto d = BufDesc(AlignCb(sz));
-        ThrowIfFailed(device->CreateCommittedResource(&upHP, D3D12_HEAP_FLAG_NONE, &d,
+        auto d = dx12::BufferDesc(dx12::AlignConstantBufferSize(sz));
+        dx12::ThrowIfFailed(device->CreateCommittedResource(&upHP, D3D12_HEAP_FLAG_NONE, &d,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&buf)), "CB");
         return SUCCEEDED(buf->Map(0, &rr, reinterpret_cast<void**>(&ptr)));
     };
@@ -592,7 +490,10 @@ void DeferredScene::UpdatePassConstants(uint32_t width, uint32_t height)
     cb.EyePosW = {m_eye.x, m_eye.y, m_eye.z, 1.f};
     cb.RenderTargetSize = {(float)width, (float)height, 1.f / width, 1.f / height};
     cb.TessParams = {1.f, 6.f, 0.5f, 15.f};
-    cb.DispParams = {0.3f, 0.f, (float)m_renderMode, m_time};
+    cb.DispParams = {0.3f, 0.f, (float)EffectiveRenderMode(), m_time};
+    const float uvOffsetX = std::fmod(m_time * m_options.UvScrollRate.x, 1.f);
+    const float uvOffsetY = std::fmod(m_time * m_options.UvScrollRate.y, 1.f);
+    cb.UvOffsetTiling = {uvOffsetX, uvOffsetY, m_options.UvTiling.x, m_options.UvTiling.y};
     std::memcpy(m_mappedPassCB, &cb, sizeof(cb));
 }
 
@@ -602,12 +503,50 @@ void DeferredScene::UpdateLightConstants(float dt)
     m_time += dt;
 
     LightConstants cb{};
-    cb.AmbientColor = {0.3f, 0.3f, 0.3f, 1.f};
+    cb.AmbientColor = {m_options.AmbientColor.x, m_options.AmbientColor.y, m_options.AmbientColor.z, 1.f};
 
-    XMFLOAT3 d{0.4f, -1.f, 0.3f};
-    float len = sqrtf(d.x*d.x + d.y*d.y + d.z*d.z);
-    cb.Lights[0].DirectionSpot = {d.x/len, d.y/len, d.z/len, 0.f};
-    cb.Lights[0].ColorIntensity = {1.f, 0.98f, 0.9f, 1.8f};
-    cb.LightCount = {1.f, 0.f, 0.f, 0.f};
+    uint32_t lightCount = 0;
+    for (const SceneLight& light : m_options.Lights)
+    {
+        if (lightCount >= MaxLights) break;
+
+        GpuLight& gpu = cb.Lights[lightCount++];
+        gpu.ColorIntensity = {light.Color.x, light.Color.y, light.Color.z, light.Intensity};
+
+        switch (light.LightType)
+        {
+        case SceneLight::Type::Directional:
+        {
+            const XMFLOAT3 dir = NormalizeOrFallback(light.Direction, XMFLOAT3{0.f, -1.f, 0.f});
+            gpu.DirectionSpot = {dir.x, dir.y, dir.z, 0.f};
+            gpu.Params = {0.f, 0.f, 0.f, 0.f};
+            break;
+        }
+        case SceneLight::Type::Point:
+            gpu.PositionRange = {light.Position.x, light.Position.y, light.Position.z, light.Range};
+            gpu.Params = {1.f, 0.f, 0.f, 0.f};
+            break;
+        case SceneLight::Type::Spot:
+        {
+            const XMFLOAT3 dir = NormalizeOrFallback(light.Direction, XMFLOAT3{0.f, -1.f, 0.f});
+            const float innerAngle = XMConvertToRadians(light.InnerConeDegrees);
+            const float outerAngle = XMConvertToRadians(light.OuterConeDegrees);
+            gpu.PositionRange = {light.Position.x, light.Position.y, light.Position.z, light.Range};
+            gpu.DirectionSpot = {dir.x, dir.y, dir.z, std::cos(outerAngle)};
+            gpu.Params = {2.f, std::cos(innerAngle), 0.f, 0.f};
+            break;
+        }
+        }
+    }
+
+    cb.LightCount = {(float)lightCount, 0.f, 0.f, 0.f};
     std::memcpy(m_mappedLightCB, &cb, sizeof(cb));
+}
+
+int DeferredScene::EffectiveRenderMode() const
+{
+    int mode = m_renderMode;
+    if (!m_options.EnableNormalMapping) mode &= ~1;
+    if (!m_options.EnableDisplacement) mode &= ~2;
+    return mode;
 }

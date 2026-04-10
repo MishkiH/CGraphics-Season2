@@ -1,47 +1,5 @@
 #include "GBuffer.h"
-#include <stdexcept>
-#include <cstdio>
-
-using Microsoft::WRL::ComPtr;
-
-namespace
-{
-    void ThrowIfFailed(HRESULT hr, const char* what)
-    {
-        if (FAILED(hr))
-        {
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), "%s (hr=0x%08X)", what, static_cast<unsigned>(hr));
-            throw std::runtime_error(buf);
-        }
-    }
-
-    D3D12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE type)
-    {
-        D3D12_HEAP_PROPERTIES p{};
-        p.Type = type;
-        p.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-        p.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-        p.CreationNodeMask = 1;
-        p.VisibleNodeMask = 1;
-        return p;
-    }
-
-    D3D12_RESOURCE_DESC Tex2DDesc(uint32_t w, uint32_t h, DXGI_FORMAT fmt, D3D12_RESOURCE_FLAGS flags)
-    {
-        D3D12_RESOURCE_DESC d{};
-        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        d.Width = w;
-        d.Height = h;
-        d.DepthOrArraySize = 1;
-        d.MipLevels = 1;
-        d.Format = fmt;
-        d.SampleDesc.Count = 1;
-        d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        d.Flags = flags;
-        return d;
-    }
-}
+#include "Dx12Helpers.h"
 
 bool GBuffer::Initialize(ID3D12Device* device, uint32_t width, uint32_t height)
 {
@@ -53,18 +11,18 @@ bool GBuffer::Initialize(ID3D12Device* device, uint32_t width, uint32_t height)
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
     rtvDesc.NumDescriptors = TargetCount;
     rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    ThrowIfFailed(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&m_rtvHeap)), "GBuffer RTV heap");
+    dx12::ThrowIfFailed(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&m_rtvHeap)), "GBuffer RTV heap");
 
     D3D12_DESCRIPTOR_HEAP_DESC srvDesc{};
     srvDesc.NumDescriptors = SrvCount;
     srvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    ThrowIfFailed(device->CreateDescriptorHeap(&srvDesc, IID_PPV_ARGS(&m_srvHeap)), "GBuffer SRV heap");
+    dx12::ThrowIfFailed(device->CreateDescriptorHeap(&srvDesc, IID_PPV_ARGS(&m_srvHeap)), "GBuffer SRV heap");
 
     D3D12_DESCRIPTOR_HEAP_DESC dsvDesc{};
     dsvDesc.NumDescriptors = 2;
     dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    ThrowIfFailed(device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&m_dsvHeap)), "GBuffer DSV heap");
+    dx12::ThrowIfFailed(device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&m_dsvHeap)), "GBuffer DSV heap");
 
     CreateResources(device);
     return true;
@@ -181,7 +139,7 @@ void GBuffer::BindForGeometryPass(ID3D12GraphicsCommandList* cmdList)
 
 void GBuffer::CreateResources(ID3D12Device* device)
 {
-    auto heap = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    auto heap = dx12::HeapProperties(D3D12_HEAP_TYPE_DEFAULT);
 
     const DXGI_FORMAT colorFmts[TargetCount] = {GetAlbedoSpecFormat(), GetNormalFormat()};
 
@@ -192,8 +150,8 @@ void GBuffer::CreateResources(ID3D12Device* device)
 
     for (uint32_t i = 0; i < TargetCount; ++i)
     {
-        auto desc = Tex2DDesc(m_width, m_height, colorFmts[i], D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        ThrowIfFailed(
+        auto desc = dx12::Texture2DDesc(m_width, m_height, colorFmts[i], D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        dx12::ThrowIfFailed(
             device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clears[i],
                 IID_PPV_ARGS(&m_targets[i])),
@@ -204,8 +162,12 @@ void GBuffer::CreateResources(ID3D12Device* device)
     depthClear.Format = GetDepthStencilFormat();
     depthClear.DepthStencil.Depth = 1.f;
 
-    auto depthDesc = Tex2DDesc(m_width, m_height, GetDepthStencilFormat(), D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
-    ThrowIfFailed(
+    auto depthDesc = dx12::Texture2DDesc(
+        m_width,
+        m_height,
+        GetDepthResourceFormat(),
+        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    dx12::ThrowIfFailed(
         device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &depthDesc,
             D3D12_RESOURCE_STATE_DEPTH_WRITE, &depthClear,
             IID_PPV_ARGS(&m_depthStencil)),
@@ -246,7 +208,7 @@ void GBuffer::CreateResources(ID3D12Device* device)
 
     D3D12_SHADER_RESOURCE_VIEW_DESC depthSrv{};
     depthSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    depthSrv.Format = DXGI_FORMAT_R32_FLOAT;
+    depthSrv.Format = GetDepthSrvFormat();
     depthSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     depthSrv.Texture2D.MipLevels = 1;
     device->CreateShaderResourceView(m_depthStencil.Get(), &depthSrv, srvHandle);
