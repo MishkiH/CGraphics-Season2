@@ -21,10 +21,8 @@ private:
         bool IsLeaf() const { return Children[0] == -1; }
     };
 
-    void Subdivide(int idx, const std::vector<AABB>& bounds,
-                   int depth, int maxDepth, int minPerLeaf);
-    void QueryNode(int idx, const Frustum& frustum,
-                   std::vector<uint32_t>& out, std::vector<bool>& visited) const;
+    void Subdivide(int nodeIdx, const std::vector<AABB>& bounds, int depth, int maxDepth, int minPerLeaf);
+    void QueryNode(int nodeIdx, const Frustum& frustum, std::vector<uint32_t>& out, std::vector<bool>& visited) const;
 
     std::vector<Node> m_nodes;
     uint32_t m_objectCount = 0;

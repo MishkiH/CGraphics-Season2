@@ -7,8 +7,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(dx12_optimization
     App.cpp
+    DeferredScene.cpp
     FrustumCuller.cpp
     GBuffer.cpp
+    ImageLoader.cpp
     Input.cpp
     main.cpp
     ObjLoader.cpp

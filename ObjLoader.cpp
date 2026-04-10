@@ -3,7 +3,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 
 using namespace DirectX;
@@ -12,21 +11,20 @@ namespace
 {
     std::string DirName(const std::string& path)
     {
-        const size_t pos = path.find_last_of("\\/");
+        size_t pos = path.find_last_of("\\/");
         return pos == std::string::npos ? std::string() : path.substr(0, pos + 1);
     }
 
     std::string JoinPath(const std::string& dir, const std::string& file)
     {
         if (dir.empty()) return file;
-        if (dir.back() == '/' || dir.back() == '\\') return dir + file;
-        return dir + "/" + file;
+        return (dir.back() == '/' || dir.back() == '\\') ? dir + file : dir + "/" + file;
     }
 
     std::string Trim(const std::string& s)
     {
-        const size_t b = s.find_first_not_of(" \t\r\n");
-        const size_t e = s.find_last_not_of(" \t\r\n");
+        size_t b = s.find_first_not_of(" \t\r\n");
+        size_t e = s.find_last_not_of(" \t\r\n");
         return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
     }
 
@@ -37,14 +35,22 @@ namespace
         return last;
     }
 
-    std::unordered_map<std::string, std::string> LoadMtl(const std::string& mtlPath,
-                                                          const std::string& baseDir)
+    struct MtlEntry
     {
-        std::unordered_map<std::string, std::string> result;
+        std::string DiffusePath;
+        std::string NormalPath;
+        std::string DisplacementPath;
+        SubMeshMaterial Material;
+    };
+
+    std::unordered_map<std::string, MtlEntry> LoadMtl(const std::string& mtlPath,
+                                                        const std::string& baseDir)
+    {
+        std::unordered_map<std::string, MtlEntry> result;
         std::ifstream f(mtlPath);
         if (!f) return result;
 
-        std::string line, curMat;
+        std::string line, cur;
         while (std::getline(f, line))
         {
             if (line.empty() || line[0] == '#') continue;
@@ -52,72 +58,58 @@ namespace
             std::string cmd;
             ss >> cmd;
 
-            if (cmd == "newmtl")
-                ss >> curMat;
-            else if ((cmd == "map_Kd") && !curMat.empty())
-            {
-                std::string tex = LastToken(ss);
-                if (!tex.empty())
-                    result[curMat] = JoinPath(baseDir, tex);
-            }
+            if (cmd == "newmtl") { ss >> cur; }
+            else if (cmd == "Kd" && !cur.empty()) { auto& m = result[cur].Material; ss >> m.Kd.x >> m.Kd.y >> m.Kd.z; }
+            else if (cmd == "Ks" && !cur.empty()) { auto& m = result[cur].Material; ss >> m.Ks.x >> m.Ks.y >> m.Ks.z; }
+            else if (cmd == "Ns" && !cur.empty()) { ss >> result[cur].Material.Ns; }
+            else if (cmd == "map_Kd" && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].DiffusePath = JoinPath(baseDir, t); }
+            else if ((cmd == "map_bump" || cmd == "bump" || cmd == "norm") && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].NormalPath = JoinPath(baseDir, t); }
+            else if (cmd == "disp" && !cur.empty()) { std::string t = LastToken(ss); if (!t.empty()) result[cur].DisplacementPath = JoinPath(baseDir, t); }
         }
         return result;
     }
 
     struct FaceIdx { int p = -1, t = -1, n = -1; };
 
-    FaceIdx ParseToken(const std::string& tok)
+    FaceIdx ParseFaceToken(const std::string& tok)
     {
-        FaceIdx idx;
-        const size_t s1 = tok.find('/');
-        if (s1 == std::string::npos)
-        {
-            idx.p = std::stoi(tok) - 1;
-            return idx;
-        }
-        if (s1 > 0) idx.p = std::stoi(tok.substr(0, s1)) - 1;
-        const size_t s2 = tok.find('/', s1 + 1);
-        if (s2 == std::string::npos)
-        {
-            if (s1 + 1 < tok.size()) idx.t = std::stoi(tok.substr(s1 + 1)) - 1;
-            return idx;
-        }
-        if (s2 > s1 + 1) idx.t = std::stoi(tok.substr(s1 + 1, s2 - s1 - 1)) - 1;
-        if (s2 + 1 < tok.size()) idx.n = std::stoi(tok.substr(s2 + 1)) - 1;
-        return idx;
+        FaceIdx fi;
+        size_t s1 = tok.find('/');
+        if (s1 == std::string::npos) { fi.p = std::stoi(tok) - 1; return fi; }
+        if (s1 > 0) fi.p = std::stoi(tok.substr(0, s1)) - 1;
+        size_t s2 = tok.find('/', s1 + 1);
+        if (s2 == std::string::npos) { if (s1 + 1 < tok.size()) fi.t = std::stoi(tok.substr(s1 + 1)) - 1; return fi; }
+        if (s2 > s1 + 1) fi.t = std::stoi(tok.substr(s1 + 1, s2 - s1 - 1)) - 1;
+        if (s2 + 1 < tok.size()) fi.n = std::stoi(tok.substr(s2 + 1)) - 1;
+        return fi;
     }
 
-    struct FaceIdxHash
-    {
-        size_t operator()(const FaceIdx& i) const noexcept
-        {
+    struct FaceIdxHash {
+        size_t operator()(const FaceIdx& i) const noexcept {
             return (size_t)i.p * 73856093u ^ (size_t)i.t * 19349663u ^ (size_t)i.n * 83492791u;
         }
     };
-
-    struct FaceIdxEq
-    {
-        bool operator()(const FaceIdx& a, const FaceIdx& b) const noexcept
-        {
+    struct FaceIdxEq {
+        bool operator()(const FaceIdx& a, const FaceIdx& b) const noexcept {
             return a.p == b.p && a.t == b.t && a.n == b.n;
         }
     };
 
     void ComputeTangents(MeshData& mesh)
     {
-        std::vector<XMFLOAT3> acc(mesh.Vertices.size(), {0,0,0});
+        std::vector<XMFLOAT3> acc(mesh.Vertices.size(), {0.f, 0.f, 0.f});
 
         for (size_t i = 0; i + 2 < mesh.Indices.size(); i += 3)
         {
-            auto& v0 = mesh.Vertices[mesh.Indices[i]];
-            auto& v1 = mesh.Vertices[mesh.Indices[i + 1]];
-            auto& v2 = mesh.Vertices[mesh.Indices[i + 2]];
+            const MeshVertex& v0 = mesh.Vertices[mesh.Indices[i]];
+            const MeshVertex& v1 = mesh.Vertices[mesh.Indices[i + 1]];
+            const MeshVertex& v2 = mesh.Vertices[mesh.Indices[i + 2]];
 
-            const XMVECTOR e1 = XMLoadFloat3(&v1.Pos) - XMLoadFloat3(&v0.Pos);
-            const XMVECTOR e2 = XMLoadFloat3(&v2.Pos) - XMLoadFloat3(&v0.Pos);
-            const float du1 = v1.TexC.x - v0.TexC.x, dv1 = v1.TexC.y - v0.TexC.y;
-            const float du2 = v2.TexC.x - v0.TexC.x, dv2 = v2.TexC.y - v0.TexC.y;
-            const float det = du1 * dv2 - du2 * dv1;
+            XMVECTOR e1 = XMLoadFloat3(&v1.Pos) - XMLoadFloat3(&v0.Pos);
+            XMVECTOR e2 = XMLoadFloat3(&v2.Pos) - XMLoadFloat3(&v0.Pos);
+            float du1 = v1.TexC.x - v0.TexC.x, dv1 = v1.TexC.y - v0.TexC.y;
+            float du2 = v2.TexC.x - v0.TexC.x, dv2 = v2.TexC.y - v0.TexC.y;
+            float det = du1 * dv2 - du2 * dv1;
             if (fabsf(det) < 1e-7f) continue;
 
             XMFLOAT3 T;
@@ -131,11 +123,10 @@ namespace
 
         for (size_t i = 0; i < mesh.Vertices.size(); ++i)
         {
-            const XMVECTOR N = XMLoadFloat3(&mesh.Vertices[i].Normal);
+            XMVECTOR N = XMLoadFloat3(&mesh.Vertices[i].Normal);
             XMVECTOR T = XMLoadFloat3(&acc[i]);
-            T = T - N * XMVector3Dot(T, N);
-            if (XMVectorGetX(XMVector3LengthSq(T)) < 1e-10f)
-                T = XMVectorSet(1, 0, 0, 0);
+            T = T - N * XMVector3Dot(T, N); // Gram-Schmidt
+            if (XMVectorGetX(XMVector3LengthSq(T)) < 1e-10f) T = XMVectorSet(1.f, 0.f, 0.f, 0.f);
             XMStoreFloat3(&mesh.Vertices[i].Tangent, XMVector3Normalize(T));
         }
     }
@@ -147,53 +138,60 @@ bool LoadObj(const std::string& path, MeshData& out)
     if (!f) return false;
 
     const std::string baseDir = DirName(path);
-
     std::vector<XMFLOAT3> positions, normals;
     std::vector<XMFLOAT2> texcoords;
-    positions.reserve(100000);
-    normals.reserve(100000);
-    texcoords.reserve(100000);
+    positions.reserve(100000); normals.reserve(100000); texcoords.reserve(100000);
 
-    std::unordered_map<FaceIdx, uint32_t, FaceIdxHash, FaceIdxEq> vertexMap;
+    std::unordered_map<FaceIdx, uint32_t, FaceIdxHash, FaceIdxEq> vertexCache;
+    std::unordered_map<std::string, MtlEntry> materials;
+    std::unordered_map<std::string, uint32_t> diffIdx, normIdx, dispIdx;
 
-    std::unordered_map<std::string, std::string> matDiffuse;
-    std::unordered_map<std::string, uint32_t>    texIndex;
+    out.DiffusePaths = {""};
+    out.NormalPaths = {""};
+    out.DisplacementPaths = {""};
 
-    out.TexturePaths.push_back("");
+    std::string curMat;
+    uint32_t groupStart = 0;
+    bool groupOpen = false;
 
-    std::string    curMat;
-    uint32_t       curGroupStart = 0;
-    bool           groupOpen     = false;
-
-    auto FlushGroup = [&]()
-    {
+    auto FlushGroup = [&]() {
         if (!groupOpen) return;
-        const uint32_t end = (uint32_t)out.Indices.size();
-        if (end > curGroupStart)
-        {
-            SubMesh sm;
-            sm.IndexStart  = curGroupStart;
-            sm.IndexCount  = end - curGroupStart;
+        uint32_t end = (uint32_t)out.Indices.size();
+        if (end <= groupStart) { groupOpen = false; return; }
 
-            auto it = matDiffuse.find(curMat);
-            if (it != matDiffuse.end() && !it->second.empty())
-            {
-                auto [ti, inserted] = texIndex.emplace(it->second, (uint32_t)out.TexturePaths.size());
-                if (inserted) out.TexturePaths.push_back(it->second);
-                sm.DiffuseTextureIndex = ti->second;
-            }
-            out.SubMeshes.push_back(sm);
+        SubMesh sm;
+        sm.IndexStart = groupStart;
+        sm.IndexCount = end - groupStart;
+
+        auto mit = materials.find(curMat);
+        if (mit != materials.end())
+        {
+            const MtlEntry& e = mit->second;
+            sm.Material = e.Material;
+
+            auto addPath = [](const std::string& p,
+                              std::unordered_map<std::string, uint32_t>& idx,
+                              std::vector<std::string>& paths) -> uint32_t {
+                if (p.empty()) return 0;
+                auto [it, ins] = idx.emplace(p, (uint32_t)paths.size());
+                if (ins) paths.push_back(p);
+                return it->second;
+            };
+            sm.DiffuseTexIndex = addPath(e.DiffusePath, diffIdx, out.DiffusePaths);
+            sm.NormalTexIndex = addPath(e.NormalPath, normIdx, out.NormalPaths);
+            sm.DisplacementTexIndex = addPath(e.DisplacementPath, dispIdx, out.DisplacementPaths);
         }
-        groupOpen     = false;
-        curGroupStart = (uint32_t)out.Indices.size();
+
+        out.SubMeshes.push_back(sm);
+        groupOpen = false;
+        groupStart = (uint32_t)out.Indices.size();
     };
 
-    auto OpenGroup = [&](const std::string& mat)
-    {
+    auto OpenGroup = [&](const std::string& mat) {
         FlushGroup();
-        curMat    = mat;
+        curMat = mat;
         groupOpen = true;
-        curGroupStart = (uint32_t)out.Indices.size();
+        groupStart = (uint32_t)out.Indices.size();
     };
 
     std::string line;
@@ -203,63 +201,32 @@ bool LoadObj(const std::string& path, MeshData& out)
 
         if (line.rfind("mtllib ", 0) == 0)
         {
-            std::istringstream ss(line);
-            std::string cmd, tok;
-            ss >> cmd;
-            while (ss >> tok)
-            {
-                const std::string mtlPath = JoinPath(baseDir, tok);
-                auto m = LoadMtl(mtlPath, baseDir);
-                matDiffuse.insert(m.begin(), m.end());
-            }
+            std::istringstream ss(line); std::string cmd, tok; ss >> cmd;
+            while (ss >> tok) { auto m = LoadMtl(JoinPath(baseDir, tok), baseDir); materials.insert(m.begin(), m.end()); }
             continue;
         }
-
         if (line.rfind("usemtl ", 0) == 0)
         {
-            std::istringstream ss(line);
-            std::string cmd, mat;
-            ss >> cmd;
-            std::getline(ss, mat);
-            mat = Trim(mat);
-            if (!mat.empty()) OpenGroup(mat);
+            std::istringstream ss(line); std::string cmd, mat; ss >> cmd; std::getline(ss, mat);
+            mat = Trim(mat); if (!mat.empty()) OpenGroup(mat);
             continue;
         }
 
         std::istringstream ss(line);
-        std::string tag;
-        ss >> tag;
+        std::string tag; ss >> tag;
 
-        if (tag == "v")
-        {
-            XMFLOAT3 p;
-            ss >> p.x >> p.y >> p.z;
-            positions.push_back(p);
-        }
-        else if (tag == "vn")
-        {
-            XMFLOAT3 n;
-            ss >> n.x >> n.y >> n.z;
-            normals.push_back(n);
-        }
-        else if (tag == "vt")
-        {
-            XMFLOAT2 t;
-            ss >> t.x >> t.y;
-            t.y = 1.f - t.y;
-            texcoords.push_back(t);
-        }
+        if (tag == "v") { XMFLOAT3 p; ss >> p.x >> p.y >> p.z; positions.push_back(p); }
+        else if (tag == "vn") { XMFLOAT3 n; ss >> n.x >> n.y >> n.z; normals.push_back(n); }
+        else if (tag == "vt") { XMFLOAT2 t; ss >> t.x >> t.y; t.y = 1.f - t.y; texcoords.push_back(t); }
         else if (tag == "f")
         {
             if (!groupOpen) OpenGroup(curMat);
-
             std::vector<uint32_t> faceVerts;
             std::string tok;
             while (ss >> tok)
             {
-                const FaceIdx fi = ParseToken(tok);
-
-                auto [it, inserted] = vertexMap.emplace(fi, (uint32_t)out.Vertices.size());
+                FaceIdx fi = ParseFaceToken(tok);
+                auto [it, inserted] = vertexCache.emplace(fi, (uint32_t)out.Vertices.size());
                 if (inserted)
                 {
                     MeshVertex v{};
@@ -273,13 +240,12 @@ bool LoadObj(const std::string& path, MeshData& out)
                         out.BoundsMax.y = std::max(out.BoundsMax.y, v.Pos.y);
                         out.BoundsMax.z = std::max(out.BoundsMax.z, v.Pos.z);
                     }
-                    if (fi.t >= 0 && fi.t < (int)texcoords.size()) v.TexC   = texcoords[fi.t];
-                    if (fi.n >= 0 && fi.n < (int)normals.size())   v.Normal = normals[fi.n];
+                    if (fi.t >= 0 && fi.t < (int)texcoords.size()) v.TexC = texcoords[fi.t];
+                    if (fi.n >= 0 && fi.n < (int)normals.size()) v.Normal = normals[fi.n];
                     out.Vertices.push_back(v);
                 }
                 faceVerts.push_back(it->second);
             }
-
             for (size_t i = 1; i + 1 < faceVerts.size(); ++i)
             {
                 out.Indices.push_back(faceVerts[0]);
@@ -290,15 +256,11 @@ bool LoadObj(const std::string& path, MeshData& out)
     }
 
     FlushGroup();
-
     if (out.Vertices.empty()) return false;
 
     if (out.SubMeshes.empty())
     {
-        SubMesh sm;
-        sm.IndexStart  = 0;
-        sm.IndexCount  = (uint32_t)out.Indices.size();
-        sm.DiffuseTextureIndex = 0;
+        SubMesh sm; sm.IndexStart = 0; sm.IndexCount = (uint32_t)out.Indices.size();
         out.SubMeshes.push_back(sm);
     }
 

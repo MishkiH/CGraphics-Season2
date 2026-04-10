@@ -1,15 +1,13 @@
 #include "SceneObjectManager.h"
 #include <random>
 #include <algorithm>
-#include <cmath>
 
 using namespace DirectX;
 
-bool SceneObjectManager::Initialize(const std::string& shrekPath,
-                                     const std::string& donkeyPath)
+bool SceneObjectManager::Initialize(const std::string& mesh0Path, const std::string& mesh1Path)
 {
-    if (!LoadObj(shrekPath,  m_meshes[0])) return false;
-    if (!LoadObj(donkeyPath, m_meshes[1])) return false;
+    if (!LoadObj(mesh0Path, m_meshes[0])) return false;
+    if (!LoadObj(mesh1Path, m_meshes[1])) return false;
     PlaceInstances();
     return true;
 }
@@ -28,24 +26,15 @@ void SceneObjectManager::PlaceInstances()
 
     for (uint32_t i = 0; i < InstanceCount; ++i)
     {
-        const uint32_t meshIdx = (i < InstanceCount / 2) ? 0u : 1u;
-
-        const float tx = posDist(rng);
-        const float tz = posDist(rng);
-        const float ry = rotDist(rng);
-        const float s = scaleDist(rng);
-
-        const XMMATRIX world = XMMatrixScaling(s, s, s)
-                             * XMMatrixRotationY(ry)
-                             * XMMatrixTranslation(tx, 0.f, tz);
+        uint32_t meshIdx = (i < InstanceCount / 2) ? 0u : 1u;
+        XMMATRIX world = XMMatrixScaling(scaleDist(rng), scaleDist(rng), scaleDist(rng))
+                       * XMMatrixRotationY(rotDist(rng))
+                       * XMMatrixTranslation(posDist(rng), 0.f, posDist(rng));
 
         SceneInstance inst;
         inst.MeshIndex = meshIdx;
         XMStoreFloat4x4(&inst.World, world);
-
-        const AABB localBounds{m_meshes[meshIdx].BoundsMin, m_meshes[meshIdx].BoundsMax};
-        inst.WorldBounds = TransformAABB(localBounds, inst.World);
-
+        inst.WorldBounds = TransformAABB({m_meshes[meshIdx].BoundsMin, m_meshes[meshIdx].BoundsMax}, inst.World);
         m_instances.push_back(inst);
         m_worldBounds.push_back(inst.WorldBounds);
     }
@@ -56,12 +45,8 @@ AABB SceneObjectManager::ComputeSceneBounds() const
     AABB scene;
     for (const auto& b : m_worldBounds)
     {
-        scene.Min.x = std::min(scene.Min.x, b.Min.x);
-        scene.Min.y = std::min(scene.Min.y, b.Min.y);
-        scene.Min.z = std::min(scene.Min.z, b.Min.z);
-        scene.Max.x = std::max(scene.Max.x, b.Max.x);
-        scene.Max.y = std::max(scene.Max.y, b.Max.y);
-        scene.Max.z = std::max(scene.Max.z, b.Max.z);
+        scene.Min.x = std::min(scene.Min.x, b.Min.x); scene.Min.y = std::min(scene.Min.y, b.Min.y); scene.Min.z = std::min(scene.Min.z, b.Min.z);
+        scene.Max.x = std::max(scene.Max.x, b.Max.x); scene.Max.y = std::max(scene.Max.y, b.Max.y); scene.Max.z = std::max(scene.Max.z, b.Max.z);
     }
     scene.Min.x -= 1.f; scene.Min.y -= 1.f; scene.Min.z -= 1.f;
     scene.Max.x += 1.f; scene.Max.y += 1.f; scene.Max.z += 1.f;
@@ -83,23 +68,15 @@ void SceneObjectManager::GetVisibleIndices(const XMFLOAT4X4& viewProj,
     if (!useFrustum)
     {
         out.resize(InstanceCount);
-        for (uint32_t i = 0; i < InstanceCount; ++i)
-            out[i] = i;
+        for (uint32_t i = 0; i < InstanceCount; ++i) out[i] = i;
         return;
     }
 
-    const Frustum frustum = Frustum::FromViewProj(viewProj);
+    Frustum frustum = Frustum::FromViewProj(viewProj);
 
     if (useOctree && m_octreeBuilt)
-    {
         m_octree.QueryVisible(frustum, out);
-    }
     else
-    {
         for (uint32_t i = 0; i < InstanceCount; ++i)
-        {
-            if (frustum.Intersects(m_instances[i].WorldBounds))
-                out.push_back(i);
-        }
-    }
+            if (frustum.Intersects(m_instances[i].WorldBounds)) out.push_back(i);
 }
