@@ -246,7 +246,7 @@ void App::UpdateWindowTitle()
     wchar_t buf[256];
     if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode)
     {
-        swprintf_s(buf, L"Lab-8  |  Scatter 300  |  [F] Frustum: %-3s  [O] Octree: %-3s  |  Visible: %u/300  |  [Tab] Hand scene",
+        swprintf_s(buf, L"Lab-8  |  Scatter 1300  |  [F] Frustum: %-3s  [O] Octree: %-3s  |  Visible: %u/1300  |  [Tab] Hand scene",
             m_renderer->FrustumCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->OctreeCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->ScatterVisibleCount());

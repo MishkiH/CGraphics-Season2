@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <random>
 
 struct SceneInstance
 {
@@ -16,8 +17,9 @@ struct SceneInstance
 class SceneObjectManager
 {
 public:
-    static constexpr uint32_t InstanceCount = 300;
     static constexpr uint32_t MeshCount = 2;
+    static constexpr uint32_t InstancesPerMesh = 650;
+    static constexpr uint32_t InstanceCount = InstancesPerMesh * MeshCount;
 
     bool Initialize(const std::string& mesh0Path, const std::string& mesh1Path);
     void BuildOctree(int maxDepth = 5, int minPerLeaf = 8);
@@ -33,7 +35,6 @@ private:
     void PlaceInstances();
     AABB ComputeSceneBounds() const;
     float ComputePlacementSpacing() const;
-    uint32_t PickMeshIndex(std::mt19937& rng) const;
 
     MeshData m_meshes[MeshCount];
     std::vector<SceneInstance> m_instances;

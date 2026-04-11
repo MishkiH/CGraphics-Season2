@@ -7,9 +7,19 @@ using namespace DirectX;
 namespace
 {
     constexpr uint32_t kPlacementColumns = 20;
-    constexpr float kMinPlacementSpacing = 24.f;
-    constexpr float kPlacementSpacingMultiplier = 2.2f;
+    constexpr float kMinPlacementSpacing = 21.f;
     constexpr float kPlacementJitterRatio = 0.18f;
+
+    std::vector<uint32_t> BuildShuffledMeshOrder()
+    {
+        std::vector<uint32_t> meshOrder(SceneObjectManager::InstanceCount, 0u);
+        const auto split = meshOrder.begin() + SceneObjectManager::InstancesPerMesh;
+        std::fill(split, meshOrder.end(), 1u);
+
+        std::mt19937 rng(42);
+        std::shuffle(meshOrder.begin(), meshOrder.end(), rng);
+        return meshOrder;
+    }
 }
 
 bool SceneObjectManager::Initialize(const std::string& mesh0Path, const std::string& mesh1Path)
@@ -28,6 +38,7 @@ void SceneObjectManager::PlaceInstances()
     m_worldBounds.reserve(InstanceCount);
 
     std::mt19937 rng(42);
+    const std::vector<uint32_t> meshOrder = BuildShuffledMeshOrder();
     std::uniform_real_distribution<float> rotDist(0.f, XM_2PI);
     std::uniform_real_distribution<float> scaleDist(0.85f, 1.25f);
     const float spacing = ComputePlacementSpacing();
@@ -40,7 +51,7 @@ void SceneObjectManager::PlaceInstances()
 
     for (uint32_t i = 0; i < InstanceCount; ++i)
     {
-        const uint32_t meshIdx = PickMeshIndex(rng);
+        const uint32_t meshIdx = meshOrder[i];
         const uint32_t column = i % columns;
         const uint32_t row = i / columns;
         const float x = originX + column * spacing + jitterDist(rng);
@@ -82,13 +93,7 @@ float SceneObjectManager::ComputePlacementSpacing() const
     };
 
     const float maxSpan = std::max(spanXZ(m_meshes[0]), spanXZ(m_meshes[1]));
-    return std::max(kMinPlacementSpacing, maxSpan * kPlacementSpacingMultiplier);
-}
-
-uint32_t SceneObjectManager::PickMeshIndex(std::mt19937& rng) const
-{
-    std::uniform_int_distribution<uint32_t> meshDist(0, MeshCount - 1);
-    return meshDist(rng);
+    return std::max(kMinPlacementSpacing, maxSpan);
 }
 
 void SceneObjectManager::BuildOctree(int maxDepth, int minPerLeaf)
