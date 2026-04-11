@@ -31,7 +31,8 @@ public:
                         const DirectX::XMFLOAT3& eyePos,
                         D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
                         D3D12_VIEWPORT viewport,
-                        D3D12_RECT scissorRect);
+                        D3D12_RECT scissorRect,
+                        float dt);
 
     void SetFrustumCulling(bool v) { m_useFrustum = v; }
     void SetOctreeCulling(bool v) { m_useOctree = v; }
@@ -65,7 +66,7 @@ private:
     bool BuildSceneCB(ID3D12Device* device);
     void UpdateSceneConstants(const DirectX::XMFLOAT4X4& viewProj, const DirectX::XMFLOAT3& eyePos);
     void GatherVisibleInstances(const DirectX::XMFLOAT4X4& viewProj);
-    void DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList);
+    void DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos);
 
     void UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
                     MeshGpu& gpu, const MeshData& mesh,
@@ -83,6 +84,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
     std::vector<uint32_t> m_visibleScratch;
     std::vector<uint32_t> m_visibleByMesh[SceneObjectManager::MeshCount];
+    float m_animationTime = 0.f;
     bool m_useFrustum = true;
     bool m_useOctree = true;
     uint32_t m_lastVisible = 0;

@@ -9,6 +9,7 @@ namespace
     constexpr uint32_t kPlacementColumns = 20;
     constexpr float kMinPlacementSpacing = 21.f;
     constexpr float kPlacementJitterRatio = 0.18f;
+    constexpr float kWaveRowDelay = 0.32f;
 
     std::vector<uint32_t> BuildShuffledMeshOrder()
     {
@@ -64,8 +65,11 @@ void SceneObjectManager::PlaceInstances()
 
         SceneInstance inst;
         inst.MeshIndex = meshIdx;
+        inst.MotionPhaseOffset = static_cast<float>(row) * kWaveRowDelay;
         XMStoreFloat4x4(&inst.World, world);
         inst.WorldBounds = TransformAABB({m_meshes[meshIdx].BoundsMin, m_meshes[meshIdx].BoundsMax}, inst.World);
+        inst.WorldBounds.Min.x -= MotionAmplitude;
+        inst.WorldBounds.Max.x += MotionAmplitude;
         m_instances.push_back(inst);
         m_worldBounds.push_back(inst.WorldBounds);
     }

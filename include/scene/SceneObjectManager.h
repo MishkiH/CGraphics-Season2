@@ -11,6 +11,7 @@ struct SceneInstance
     DirectX::XMFLOAT4X4 World;
     AABB WorldBounds;
     uint32_t MeshIndex; // 0 = shrek, 1 = donkey
+    float MotionPhaseOffset = 0.f;
 };
 
 class SceneObjectManager
@@ -19,6 +20,7 @@ public:
     static constexpr uint32_t MeshCount = 2;
     static constexpr uint32_t InstancesPerMesh = 650;
     static constexpr uint32_t InstanceCount = InstancesPerMesh * MeshCount;
+    static constexpr float MotionAmplitude = 21.f;
 
     bool Initialize(const std::string& mesh0Path, const std::string& mesh1Path);
     void BuildOctree(int maxDepth = 5, int minPerLeaf = 8);

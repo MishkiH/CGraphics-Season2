@@ -115,8 +115,7 @@ namespace scene_profiles
             15.5f,                                 // range
             5.5f,                                  // inner cone angle
             8.5f));                                // outer cone angle
-        return options;
-    }
+        return options;    }
 
     inline CameraPreset GetCameraPresetForScene(int sceneMode)
     {

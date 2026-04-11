@@ -139,7 +139,7 @@ void RenderingSystem::Draw(float dt)
         XMFLOAT4X4 viewProj;
         XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&m_view) * XMLoadFloat4x4(&m_proj));
         m_scatterScene->RecordCommands(m_cmdList.Get(), viewProj, m_eye,
-                                        CurrentBackBufferRTV(), m_viewport, m_scissorRect);
+                                        CurrentBackBufferRTV(), m_viewport, m_scissorRect, dt);
     }
     else if (m_sceneMode == SponzaSceneMode && m_sponzaScene)
     {

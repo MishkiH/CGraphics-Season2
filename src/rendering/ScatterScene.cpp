@@ -3,9 +3,47 @@
 #include "AssetPath.h"
 #include "Dx12Helpers.h"
 #include <cstring>
+#include <cmath>
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
+
+namespace
+{
+    constexpr float kMotionSpeed = 1.5f;
+
+    float SampleAnimationTime(float animationTime, float distanceSq)
+    {
+        if (distanceSq < 900.f * 900.f)
+            return animationTime;
+
+        const float step = distanceSq < 1500.f * 1500.f
+            ? 0.10f
+            : distanceSq < 2000.f * 2000.f
+                ? 0.22f
+                : 0.45f;
+
+        return std::floor(animationTime / step) * step;
+    }
+
+    XMFLOAT4X4 BuildAnimatedWorld(const SceneInstance& instance, uint32_t instanceIndex,
+                                  const XMFLOAT3& eyePos, float animationTime)
+    {
+        const float dx = instance.World._41 - eyePos.x;
+        const float dy = instance.World._42 - eyePos.y;
+        const float dz = instance.World._43 - eyePos.z;
+        const float sampledTime = SampleAnimationTime(animationTime, dx * dx + dy * dy + dz * dz);
+        const float phase = sampledTime * kMotionSpeed - instance.MotionPhaseOffset
+            + static_cast<float>(instanceIndex % SceneObjectManager::MeshCount) * 0.18f;
+        const float offsetX = std::sin(phase) * SceneObjectManager::MotionAmplitude;
+
+        XMFLOAT4X4 animatedWorld{};
+        XMStoreFloat4x4(
+            &animatedWorld,
+            XMLoadFloat4x4(&instance.World) * XMMatrixTranslation(offsetX, 0.f, 0.f));
+        return animatedWorld;
+    }
+}
 
 bool ScatterScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue,
                                DXGI_FORMAT backBufferFmt, uint32_t width, uint32_t height,
@@ -36,8 +74,10 @@ void ScatterScene::OnResize(ID3D12Device* device, uint32_t width, uint32_t heigh
 void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
                                    const XMFLOAT4X4& viewProj, const XMFLOAT3& eyePos,
                                    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
-                                   D3D12_VIEWPORT viewport, D3D12_RECT scissorRect)
+                                   D3D12_VIEWPORT viewport, D3D12_RECT scissorRect,
+                                   float dt)
 {
+    m_animationTime += dt;
     UpdateSceneConstants(viewProj, eyePos);
     GatherVisibleInstances(viewProj);
 
@@ -50,7 +90,7 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootSignature(m_rootSig.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->SetGraphicsRootConstantBufferView(0, m_sceneCB->GetGPUVirtualAddress());
-    DrawVisibleInstances(cmdList);
+    DrawVisibleInstances(cmdList, eyePos);
 }
 
 void ScatterScene::UpdateSceneConstants(const XMFLOAT4X4& viewProj, const XMFLOAT3& eyePos)
@@ -75,7 +115,7 @@ void ScatterScene::GatherVisibleInstances(const XMFLOAT4X4& viewProj)
         m_visibleByMesh[instances[instanceIndex].MeshIndex].push_back(instanceIndex);
 }
 
-void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList)
+void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, const XMFLOAT3& eyePos)
 {
     const auto& instances = m_scene.GetInstances();
 
@@ -95,7 +135,8 @@ void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList)
         for (uint32_t instanceIndex : visibleInstances)
         {
             const SceneInstance& instance = instances[instanceIndex];
-            cmdList->SetGraphicsRoot32BitConstants(1, 16, &instance.World, 0);
+            const XMFLOAT4X4 animatedWorld = BuildAnimatedWorld(instance, instanceIndex, eyePos, m_animationTime);
+            cmdList->SetGraphicsRoot32BitConstants(1, 16, &animatedWorld, 0);
 
             for (const SubMesh& subMesh : mesh.SubMeshes)
             {
