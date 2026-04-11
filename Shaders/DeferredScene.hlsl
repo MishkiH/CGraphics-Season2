@@ -203,6 +203,7 @@ struct GpuLight
 cbuffer LightCB : register(b1)
 {
     float4 gAmbientColor;
+    float4 gSkyTopColor;
     float4 gBackgroundColor;
     float4 gLightCount;
     GpuLight gLights[MAX_LIGHTS];
@@ -235,9 +236,8 @@ float3 ReconstructWorldPos(float2 uv, float ndcDepth)
 
 float3 SampleBackground(float2 uv)
 {
-    const float3 skyTop = float3(0.08, 0.16, 0.34);
     const float gradient = saturate(pow(uv.y, 0.85));
-    return lerp(skyTop, gBackgroundColor.rgb, gradient);
+    return lerp(gSkyTopColor.rgb, gBackgroundColor.rgb, gradient);
 }
 
 float4 LightingPS(QuadVSOut pin) : SV_TARGET

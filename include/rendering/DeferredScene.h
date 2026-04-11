@@ -55,6 +55,7 @@ public:
         float SceneScale = 1.f;
         DirectX::XMFLOAT3 SceneOffset{0.f, 0.f, 0.f};
         DirectX::XMFLOAT3 AmbientColor{0.05f, 0.05f, 0.06f};
+        DirectX::XMFLOAT3 SkyTopColor{0.08f, 0.16f, 0.34f};
         DirectX::XMFLOAT3 ClearColor{0.f, 0.f, 0.f};
         DirectX::XMFLOAT2 UvTiling{1.f, 1.f};
         DirectX::XMFLOAT2 UvScrollRate{0.f, 0.f};
@@ -108,6 +109,7 @@ private:
     struct alignas(16) LightConstants
     {
         DirectX::XMFLOAT4 AmbientColor{0.05f, 0.05f, 0.06f, 1.f};
+        DirectX::XMFLOAT4 SkyTopColor{0.08f, 0.16f, 0.34f, 1.f};
         DirectX::XMFLOAT4 BackgroundColor{0.f, 0.f, 0.f, 1.f};
         DirectX::XMFLOAT4 LightCount{0.f, 0.f, 0.f, 0.f};
         GpuLight Lights[MaxLights]{};

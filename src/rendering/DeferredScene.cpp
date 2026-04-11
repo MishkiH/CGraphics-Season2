@@ -554,6 +554,7 @@ void DeferredScene::UpdateLightConstants(float dt)
 
     LightConstants cb{};
     cb.AmbientColor = {m_options.AmbientColor.x, m_options.AmbientColor.y, m_options.AmbientColor.z, 1.f};
+    cb.SkyTopColor = {m_options.SkyTopColor.x, m_options.SkyTopColor.y, m_options.SkyTopColor.z, 1.f};
     cb.BackgroundColor = {m_options.ClearColor.x, m_options.ClearColor.y, m_options.ClearColor.z, 1.f};
 
     uint32_t lightCount = 0;

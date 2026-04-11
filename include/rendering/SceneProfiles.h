@@ -75,7 +75,8 @@ namespace scene_profiles
         options.EnableDisplacement = true;
         options.SceneScale = 1.f;
         options.AmbientColor = {0.3f, 0.3f, 0.3f};
-        options.ClearColor = {0.03f, 0.04f, 0.06f};
+        options.SkyTopColor = {0.02f, 0.05f, 0.12f};
+        options.ClearColor = {0.005f, 0.02f, 0.06f};
         options.Lights.push_back(MakeDirectionalLight(
             DirectX::XMFLOAT3{0.4f, -1.f, 0.3f},
             DirectX::XMFLOAT3{1.f, 0.98f, 0.9f},
@@ -93,6 +94,7 @@ namespace scene_profiles
         options.EnableDisplacement = false;
         options.SceneScale = 0.008f;
         options.AmbientColor = {0.025f, 0.025f, 0.03f};
+        options.SkyTopColor = {0.08f, 0.16f, 0.34f};
         options.ClearColor = {0.52f, 0.28f, 0.12f};
         options.UvTiling = {1.55f, 1.55f};
         options.UvScrollRate = {0.03f, 0.012f};
