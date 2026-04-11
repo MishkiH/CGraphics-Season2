@@ -1,5 +1,6 @@
 #pragma once
 #include "FrustumCuller.h"
+#include <array>
 #include <vector>
 #include <cstdint>
 
@@ -15,8 +16,8 @@ private:
     struct Node
     {
         AABB Bounds;
-        int Children[8]{-1,-1,-1,-1,-1,-1,-1,-1};
-        std::vector<uint32_t> Objects; // Objects owned by this node. Straddling bounds stay here.
+        std::array<int, 8> Children{{-1, -1, -1, -1, -1, -1, -1, -1}};
+        std::vector<uint32_t> Objects;
 
         bool IsLeaf() const;
     };

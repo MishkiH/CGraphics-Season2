@@ -19,6 +19,14 @@ namespace
 {
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+    int BuildRenderMode(bool useNormalMapping, bool useDisplacement)
+    {
+        int mode = DeferredScene::RenderFeatureNone;
+        if (useNormalMapping) mode |= DeferredScene::RenderFeatureNormalMapping;
+        if (useDisplacement) mode |= DeferredScene::RenderFeatureDisplacement;
+        return mode;
+    }
+
     bool InitializeDeferredScene(
         ID3D12Device* device,
         ID3D12CommandQueue* cmdQueue,
@@ -189,16 +197,16 @@ void RenderingSystem::SetProjectionClipRange(float nearClip, float farClip)
     UpdateProjectionMatrix();
 }
 
-void RenderingSystem::SetHandRenderMode(int mode)
+void RenderingSystem::SetHandFeatures(bool useNormalMapping, bool useDisplacement)
 {
     if (DeferredScene* scene = GetDeferredScene(HandSceneMode))
-        scene->SetRenderMode(mode);
+        scene->SetRenderMode(BuildRenderMode(useNormalMapping, useDisplacement));
 }
 
-void RenderingSystem::SetSponzaRenderMode(int mode)
+void RenderingSystem::SetSponzaFeatures(bool useNormalMapping)
 {
     if (DeferredScene* scene = GetDeferredScene(SponzaSceneMode))
-        scene->SetRenderMode(mode);
+        scene->SetRenderMode(BuildRenderMode(useNormalMapping, false));
 }
 
 void RenderingSystem::SetSponzaUvEffectsEnabled(bool enabled)

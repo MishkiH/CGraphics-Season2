@@ -72,16 +72,7 @@ void ScatterScene::GatherVisibleInstances(const XMFLOAT4X4& viewProj)
 
     const auto& instances = m_scene.GetInstances();
     for (uint32_t instanceIndex : m_visibleScratch)
-    {
-        if (instanceIndex >= instances.size())
-            continue;
-
-        const uint32_t meshIndex = instances[instanceIndex].MeshIndex;
-        if (meshIndex >= SceneObjectManager::MeshCount)
-            continue;
-
-        m_visibleByMesh[meshIndex].push_back(instanceIndex);
-    }
+        m_visibleByMesh[instances[instanceIndex].MeshIndex].push_back(instanceIndex);
 }
 
 void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList)
@@ -230,8 +221,8 @@ void ScatterScene::UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* c
     uint64_t ibSz = mesh.Indices.size() * sizeof(uint32_t);
 
     ComPtr<ID3D12Resource> vbUp, ibUp;
-    gpu.VertexBuffer = CreateGpuBuffer(device, cmdList, mesh.Vertices.data(), vbSz, vbUp);
-    gpu.IndexBuffer = CreateGpuBuffer(device, cmdList, mesh.Indices.data(), ibSz, ibUp);
+    gpu.VertexBuffer = dx12::CreateDefaultBuffer(device, cmdList, mesh.Vertices.data(), vbSz, vbUp);
+    gpu.IndexBuffer = dx12::CreateDefaultBuffer(device, cmdList, mesh.Indices.data(), ibSz, ibUp);
     uploads.push_back(vbUp); uploads.push_back(ibUp);
     gpu.VBV = {gpu.VertexBuffer->GetGPUVirtualAddress(), (UINT)vbSz, sizeof(MeshVertex)};
     gpu.IBV = {gpu.IndexBuffer->GetGPUVirtualAddress(), (UINT)ibSz, DXGI_FORMAT_R32_UINT};
@@ -302,11 +293,4 @@ bool ScatterScene::BuildSceneCB(ID3D12Device* device)
     D3D12_RANGE rr{0, 0};
     m_sceneCB->Map(0, &rr, reinterpret_cast<void**>(&m_mappedSceneCB));
     return true;
-}
-
-ComPtr<ID3D12Resource> ScatterScene::CreateGpuBuffer(
-    ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-    const void* data, uint64_t size, ComPtr<ID3D12Resource>& upload)
-{
-    return dx12::CreateDefaultBuffer(device, cmdList, data, size, upload);
 }

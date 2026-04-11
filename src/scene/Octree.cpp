@@ -1,6 +1,5 @@
 #include "Octree.h"
 #include <array>
-#include <algorithm>
 
 namespace
 {
@@ -106,10 +105,7 @@ void Octree::Subdivide(int idx, const std::vector<AABB>& bounds,
         m_nodes.push_back(std::move(child));
     }
 
-    std::array<int, 8> childIndices{};
-    for (int childSlot = 0; childSlot < static_cast<int>(childIndices.size()); ++childSlot)
-        childIndices[childSlot] = m_nodes[idx].Children[childSlot];
-
+    const std::array<int, 8> childIndices = m_nodes[idx].Children;
     for (int childIndex : childIndices)
     {
         if (childIndex != -1)
@@ -131,13 +127,8 @@ void Octree::QueryNode(int idx, const Frustum& frustum,
     if (!frustum.Intersects(node.Bounds)) return;
 
     for (uint32_t objectIndex : node.Objects)
-    {
-        if (objectIndex >= m_objectBounds.size())
-            continue;
-
         if (frustum.Intersects(m_objectBounds[objectIndex]))
             out.push_back(objectIndex);
-    }
 
     if (node.IsLeaf())
         return;

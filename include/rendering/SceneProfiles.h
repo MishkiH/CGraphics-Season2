@@ -75,6 +75,7 @@ namespace scene_profiles
         options.EnableDisplacement = true;
         options.SceneScale = 1.f;
         options.AmbientColor = {0.3f, 0.3f, 0.3f};
+        options.ClearColor = {0.03f, 0.04f, 0.06f};
         options.Lights.push_back(MakeDirectionalLight(
             DirectX::XMFLOAT3{0.4f, -1.f, 0.3f},
             DirectX::XMFLOAT3{1.f, 0.98f, 0.9f},
@@ -92,31 +93,26 @@ namespace scene_profiles
         options.EnableDisplacement = false;
         options.SceneScale = 0.008f;
         options.AmbientColor = {0.025f, 0.025f, 0.03f};
+        options.ClearColor = {0.52f, 0.28f, 0.12f};
         options.UvTiling = {1.55f, 1.55f};
         options.UvScrollRate = {0.03f, 0.012f};
-
-        // Broad cool fill that keeps the atrium readable without washing out local lights.
         options.Lights.push_back(MakeDirectionalLight(
-            DirectX::XMFLOAT3{0.4f, -1.f, 0.3f},
-            DirectX::XMFLOAT3{0.58f, 0.62f, 1.0f},
-            1.1f));
-
-        // Warm point light near the right gallery to make the local falloff obvious.
+            DirectX::XMFLOAT3{0.32f, -1.f, 0.18f}, // direction
+            DirectX::XMFLOAT3{0.92f, 0.52f, 0.30f},// color
+            0.95f));                               // intensity
         options.Lights.push_back(MakePointLight(
-            DirectX::XMFLOAT3{8.5f, 2.3f, -0.4f},
-            DirectX::XMFLOAT3{1.0f, 0.18f, 0.12f},
-            4.2f,
-            4.8f));
-
-        // Focused green spotlight from the upper left wing for a clearly visible cone.
+            DirectX::XMFLOAT3{8.5f, 2.3f, -0.4f},  // position
+            DirectX::XMFLOAT3{1.0f, 0.42f, 0.08f}, // color
+            3.5f,                                  // intensity
+            4.f));                                 // range
         options.Lights.push_back(MakeSpotLight(
-            DirectX::XMFLOAT3{-7.5f, 12.8f, -0.3f},
-            DirectX::XMFLOAT3{0.55f, -1.f, 0.05f},
-            DirectX::XMFLOAT3{0.18f, 1.0f, 0.25f},
-            5.3f,
-            10.5f,
-            9.f,
-            22.f));
+            DirectX::XMFLOAT3{-7.8f, 13.f, -1.4f}, // position
+            DirectX::XMFLOAT3{0.16f, -1.f, 0.03f}, // direction
+            DirectX::XMFLOAT3{0.74f, 0.28f, 1.0f}, // color
+            6.1f,                                  // intensity
+            15.5f,                                 // range
+            5.5f,                                  // inner cone angle
+            8.5f));                                // outer cone angle
         return options;
     }
 
@@ -124,10 +120,10 @@ namespace scene_profiles
     {
         switch (sceneMode)
         {
-        case 1:
-            return {{-6.5f, 1.7f, -3.5f}, 0.92f, -0.05f, 7.f, 0.05f, 900.f};
-        case 2:
+        case 0:
             return {{-340.f, 62.f, -340.f}, 0.82f, -0.11f, 42.f, 0.05f, 2600.f};
+        case 2:
+            return {{-6.5f, 1.7f, -3.5f}, 0.92f, -0.05f, 7.f, 0.05f, 900.f};
         default:
             return {{-24.f, 8.f, -24.f}, 1.f, 0.f, 8.f, 0.05f, 1000.f};
         }

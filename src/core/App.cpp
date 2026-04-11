@@ -1,7 +1,6 @@
 #include "App.h"
 #include "Window.h"
 #include "Input.h"
-#include "DeferredScene.h"
 #include "RenderingSystem.h"
 #include "SceneProfiles.h"
 #include <windows.h>
@@ -14,14 +13,6 @@ using namespace DirectX;
 
 namespace
 {
-    int BuildRenderMode(bool useNormal, bool useDisplacement)
-    {
-        int mode = DeferredScene::RenderFeatureNone;
-        if (useNormal) mode |= DeferredScene::RenderFeatureNormalMapping;
-        if (useDisplacement) mode |= DeferredScene::RenderFeatureDisplacement;
-        return mode;
-    }
-
     uint64_t Qpc() { LARGE_INTEGER t{}; QueryPerformanceCounter(&t); return (uint64_t)t.QuadPart; }
     double Qpf() { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return (double)f.QuadPart; }
 
@@ -56,10 +47,11 @@ bool App::Initialize(HINSTANCE hInstance, int nCmdShow)
                                  (uint32_t)(rc.bottom - rc.top)))
         return false;
 
-    ApplySceneCameraPreset(RenderingSystem::HandSceneMode);
+    ApplySceneCameraPreset(RenderingSystem::ScatterSceneMode);
     ApplyHandRenderMode();
     ApplySponzaRenderMode();
     ApplySponzaUvEffects();
+    UpdateWindowTitle();
     return true;
 }
 
@@ -109,22 +101,26 @@ void App::HandleSceneHotkeys()
 void App::HandleSceneFeatureHotkeys()
 {
     const int sceneMode = m_renderer->GetSceneMode();
+    const bool nDown = m_input->IsKeyDown('N');
+    const bool mDown = m_input->IsKeyDown('M');
+    const bool tDown = m_input->IsKeyDown('T');
+    const bool fDown = m_input->IsKeyDown('F');
+    const bool oDown = m_input->IsKeyDown('O');
 
     if (sceneMode == RenderingSystem::ScatterSceneMode)
     {
-        m_prevN = m_input->IsKeyDown('N');
-        m_prevM = m_input->IsKeyDown('M');
-        m_prevT = m_input->IsKeyDown('T');
-
-        if (JustPressed(m_input->IsKeyDown('F'), m_prevF)) { m_renderer->ToggleFrustumCulling(); UpdateWindowTitle(); }
-        if (JustPressed(m_input->IsKeyDown('O'), m_prevO)) { m_renderer->ToggleOctreeCulling(); UpdateWindowTitle(); }
+        m_prevN = nDown;
+        m_prevM = mDown;
+        m_prevT = tDown;
+        if (JustPressed(fDown, m_prevF)) { m_renderer->ToggleFrustumCulling(); UpdateWindowTitle(); }
+        if (JustPressed(oDown, m_prevO)) { m_renderer->ToggleOctreeCulling(); UpdateWindowTitle(); }
         return;
     }
 
-    m_prevF = m_input->IsKeyDown('F');
-    m_prevO = m_input->IsKeyDown('O');
+    m_prevF = fDown;
+    m_prevO = oDown;
 
-    if (JustPressed(m_input->IsKeyDown('N'), m_prevN))
+    if (JustPressed(nDown, m_prevN))
     {
         if (sceneMode == RenderingSystem::HandSceneMode)
         {
@@ -140,17 +136,17 @@ void App::HandleSceneFeatureHotkeys()
 
     if (sceneMode == RenderingSystem::HandSceneMode)
     {
-        if (JustPressed(m_input->IsKeyDown('M'), m_prevM))
+        if (JustPressed(mDown, m_prevM))
         {
             m_handUseDisp = !m_handUseDisp;
             ApplyHandRenderMode();
         }
-        m_prevT = m_input->IsKeyDown('T');
+        m_prevT = tDown;
         return;
     }
 
-    m_prevM = m_input->IsKeyDown('M');
-    if (JustPressed(m_input->IsKeyDown('T'), m_prevT))
+    m_prevM = mDown;
+    if (JustPressed(tDown, m_prevT))
     {
         m_sponzaUvEffects = !m_sponzaUvEffects;
         ApplySponzaUvEffects();
@@ -208,14 +204,14 @@ void App::UpdateCameraController(float dt)
 void App::ApplyHandRenderMode()
 {
     if (!m_renderer) return;
-    m_renderer->SetHandRenderMode(BuildRenderMode(m_handUseNormal, m_handUseDisp));
+    m_renderer->SetHandFeatures(m_handUseNormal, m_handUseDisp);
     UpdateWindowTitle();
 }
 
 void App::ApplySponzaRenderMode()
 {
     if (!m_renderer) return;
-    m_renderer->SetSponzaRenderMode(BuildRenderMode(m_sponzaUseNormal, false));
+    m_renderer->SetSponzaFeatures(m_sponzaUseNormal);
     UpdateWindowTitle();
 }
 

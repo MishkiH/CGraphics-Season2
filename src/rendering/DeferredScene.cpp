@@ -164,9 +164,14 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     m_gBuffer->TransitionToRead(cmdList);
     m_gBuffer->TransitionDepthToRead(cmdList);
 
-    const float black[4] = {};
+    const float clearColor[4] = {
+        m_options.ClearColor.x,
+        m_options.ClearColor.y,
+        m_options.ClearColor.z,
+        1.f
+    };
     cmdList->OMSetRenderTargets(1, &backBufferRtv, TRUE, nullptr);
-    cmdList->ClearRenderTargetView(backBufferRtv, black, 0, nullptr);
+    cmdList->ClearRenderTargetView(backBufferRtv, clearColor, 0, nullptr);
 
     cmdList->SetPipelineState(m_lightingPSO.Get());
     cmdList->SetGraphicsRootSignature(m_rootSig.Get());
@@ -549,6 +554,7 @@ void DeferredScene::UpdateLightConstants(float dt)
 
     LightConstants cb{};
     cb.AmbientColor = {m_options.AmbientColor.x, m_options.AmbientColor.y, m_options.AmbientColor.z, 1.f};
+    cb.BackgroundColor = {m_options.ClearColor.x, m_options.ClearColor.y, m_options.ClearColor.z, 1.f};
 
     uint32_t lightCount = 0;
     for (const SceneLight& light : m_options.Lights)

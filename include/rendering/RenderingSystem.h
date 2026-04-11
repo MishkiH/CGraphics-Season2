@@ -21,9 +21,9 @@ class RenderingSystem
 public:
     enum SceneMode : int
     {
-        HandSceneMode = 0,
-        SponzaSceneMode = 1,
-        ScatterSceneMode = 2,
+        ScatterSceneMode = 0,
+        HandSceneMode = 1,
+        SponzaSceneMode = 2,
     };
 
     static constexpr int SceneModeCount = 3;
@@ -41,8 +41,8 @@ public:
     void SetSceneMode(int mode);
     int GetSceneMode() const { return m_sceneMode; }
 
-    void SetHandRenderMode(int mode);
-    void SetSponzaRenderMode(int mode);
+    void SetHandFeatures(bool useNormalMapping, bool useDisplacement);
+    void SetSponzaFeatures(bool useNormalMapping);
     void SetSponzaUvEffectsEnabled(bool enabled);
     bool SponzaUvEffectsEnabled() const;
 

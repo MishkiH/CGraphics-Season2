@@ -71,11 +71,6 @@ private:
                     MeshGpu& gpu, const MeshData& mesh,
                     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploads);
 
-    static Microsoft::WRL::ComPtr<ID3D12Resource> CreateGpuBuffer(
-        ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
-        const void* data, uint64_t size,
-        Microsoft::WRL::ComPtr<ID3D12Resource>& upload);
-
     SceneObjectManager m_scene;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;

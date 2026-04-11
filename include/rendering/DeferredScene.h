@@ -55,6 +55,7 @@ public:
         float SceneScale = 1.f;
         DirectX::XMFLOAT3 SceneOffset{0.f, 0.f, 0.f};
         DirectX::XMFLOAT3 AmbientColor{0.05f, 0.05f, 0.06f};
+        DirectX::XMFLOAT3 ClearColor{0.f, 0.f, 0.f};
         DirectX::XMFLOAT2 UvTiling{1.f, 1.f};
         DirectX::XMFLOAT2 UvScrollRate{0.f, 0.f};
         std::vector<SceneLight> Lights;
@@ -74,7 +75,6 @@ public:
     void SetRenderMode(int mode) { m_renderMode = mode; }
     void SetUvEffectsEnabled(bool enabled) { m_uvEffectsEnabled = enabled; }
     bool UvEffectsEnabled() const { return m_uvEffectsEnabled; }
-    bool UsesTessellation() const { return m_options.UseTessellation; }
 
     void RecordCommands(ID3D12GraphicsCommandList* cmdList,
                         D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
@@ -108,6 +108,7 @@ private:
     struct alignas(16) LightConstants
     {
         DirectX::XMFLOAT4 AmbientColor{0.05f, 0.05f, 0.06f, 1.f};
+        DirectX::XMFLOAT4 BackgroundColor{0.f, 0.f, 0.f, 1.f};
         DirectX::XMFLOAT4 LightCount{0.f, 0.f, 0.f, 0.f};
         GpuLight Lights[MaxLights]{};
     };

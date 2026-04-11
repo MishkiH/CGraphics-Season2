@@ -203,6 +203,7 @@ struct GpuLight
 cbuffer LightCB : register(b1)
 {
     float4 gAmbientColor;
+    float4 gBackgroundColor;
     float4 gLightCount;
     GpuLight gLights[MAX_LIGHTS];
 };
@@ -232,9 +233,17 @@ float3 ReconstructWorldPos(float2 uv, float ndcDepth)
     return worldPos.xyz / worldPos.w;
 }
 
+float3 SampleBackground(float2 uv)
+{
+    const float3 skyTop = float3(0.08, 0.16, 0.34);
+    const float gradient = saturate(pow(uv.y, 0.85));
+    return lerp(skyTop, gBackgroundColor.rgb, gradient);
+}
+
 float4 LightingPS(QuadVSOut pin) : SV_TARGET
 {
     int3 coords = int3((int2)pin.PosH.xy, 0);
+    float2 uv = pin.PosH.xy * gRTSize.zw;
 
     float4 albedoSpec = gAlbedoSpecTex.Load(coords);
     float3 albedo = albedoSpec.rgb;
@@ -245,9 +254,8 @@ float4 LightingPS(QuadVSOut pin) : SV_TARGET
     float  ndcDepth = gHwDepthTex.Load(coords).r;
 
     if (ndcDepth >= 1.0)
-        return float4(0.0, 0.0, 0.0, 1.0);
+        return float4(SampleBackground(uv), 1.0);
 
-    float2 uv = pin.PosH.xy * gRTSize.zw;
     float3 posW = ReconstructWorldPos(uv, ndcDepth);
     float3 V = normalize(gEyePosW.xyz - posW);
 
