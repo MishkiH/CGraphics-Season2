@@ -182,6 +182,7 @@ bool LoadObj(const std::string& path, MeshData& out)
 {
     std::ifstream f(path);
     if (!f) return false;
+    out = MeshData{};
 
     const std::string baseDir = DirName(path);
     std::vector<XMFLOAT3> positions, normals;

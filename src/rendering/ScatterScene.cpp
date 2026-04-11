@@ -38,12 +38,8 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
                                    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
                                    D3D12_VIEWPORT viewport, D3D12_RECT scissorRect)
 {
-    SceneCBData cbData{viewProj, {eyePos.x, eyePos.y, eyePos.z, 1.f}};
-    std::memcpy(m_mappedSceneCB, &cbData, sizeof(cbData));
-
-    std::vector<uint32_t> visible;
-    m_scene.GetVisibleIndices(viewProj, m_useFrustum, m_useOctree, visible);
-    m_lastVisible = (uint32_t)visible.size();
+    UpdateSceneConstants(viewProj, eyePos);
+    GatherVisibleInstances(viewProj);
 
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
     cmdList->OMSetRenderTargets(1, &backBufferRtv, FALSE, &dsv);
@@ -54,34 +50,69 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootSignature(m_rootSig.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->SetGraphicsRootConstantBufferView(0, m_sceneCB->GetGPUVirtualAddress());
+    DrawVisibleInstances(cmdList);
+}
+
+void ScatterScene::UpdateSceneConstants(const XMFLOAT4X4& viewProj, const XMFLOAT3& eyePos)
+{
+    const SceneCBData cbData{viewProj, {eyePos.x, eyePos.y, eyePos.z, 1.f}};
+    std::memcpy(m_mappedSceneCB, &cbData, sizeof(cbData));
+}
+
+void ScatterScene::GatherVisibleInstances(const XMFLOAT4X4& viewProj)
+{
+    m_scene.GetVisibleIndices(viewProj, m_useFrustum, m_useOctree, m_visibleScratch);
+    m_lastVisible = static_cast<uint32_t>(m_visibleScratch.size());
+
+    for (auto& bucket : m_visibleByMesh)
+    {
+        bucket.clear();
+        bucket.reserve(m_visibleScratch.size() / SceneObjectManager::MeshCount + 1);
+    }
 
     const auto& instances = m_scene.GetInstances();
-    uint32_t prevMesh = UINT32_MAX;
-
-    for (uint32_t idx : visible)
+    for (uint32_t instanceIndex : m_visibleScratch)
     {
-        const SceneInstance& inst = instances[idx];
-        uint32_t mi = inst.MeshIndex;
-        const MeshGpu& gpu = m_meshes[mi];
-        const MeshData& mesh = m_scene.GetMesh(mi);
+        if (instanceIndex >= instances.size())
+            continue;
 
-        if (mi != prevMesh)
+        const uint32_t meshIndex = instances[instanceIndex].MeshIndex;
+        if (meshIndex >= SceneObjectManager::MeshCount)
+            continue;
+
+        m_visibleByMesh[meshIndex].push_back(instanceIndex);
+    }
+}
+
+void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList)
+{
+    const auto& instances = m_scene.GetInstances();
+
+    for (uint32_t meshIndex = 0; meshIndex < SceneObjectManager::MeshCount; ++meshIndex)
+    {
+        const std::vector<uint32_t>& visibleInstances = m_visibleByMesh[meshIndex];
+        if (visibleInstances.empty())
+            continue;
+
+        const MeshGpu& gpu = m_meshes[meshIndex];
+        const MeshData& mesh = m_scene.GetMesh(meshIndex);
+        ID3D12DescriptorHeap* heaps[] = {gpu.SrvHeap.Get()};
+        cmdList->SetDescriptorHeaps(1, heaps);
+        cmdList->IASetVertexBuffers(0, 1, &gpu.VBV);
+        cmdList->IASetIndexBuffer(&gpu.IBV);
+
+        for (uint32_t instanceIndex : visibleInstances)
         {
-            ID3D12DescriptorHeap* heaps[] = {gpu.SrvHeap.Get()};
-            cmdList->SetDescriptorHeaps(1, heaps);
-            cmdList->IASetVertexBuffers(0, 1, &gpu.VBV);
-            cmdList->IASetIndexBuffer(&gpu.IBV);
-            prevMesh = mi;
-        }
+            const SceneInstance& instance = instances[instanceIndex];
+            cmdList->SetGraphicsRoot32BitConstants(1, 16, &instance.World, 0);
 
-        cmdList->SetGraphicsRoot32BitConstants(1, 16, &inst.World, 0);
-
-        for (const SubMesh& sm : mesh.SubMeshes)
-        {
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
-            srv.ptr += (UINT64)sm.DiffuseTexIndex * gpu.SrvStride;
-            cmdList->SetGraphicsRootDescriptorTable(2, srv);
-            cmdList->DrawIndexedInstanced(sm.IndexCount, 1, sm.IndexStart, 0, 0);
+            for (const SubMesh& subMesh : mesh.SubMeshes)
+            {
+                D3D12_GPU_DESCRIPTOR_HANDLE srv = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
+                srv.ptr += static_cast<UINT64>(subMesh.DiffuseTexIndex) * gpu.SrvStride;
+                cmdList->SetGraphicsRootDescriptorTable(2, srv);
+                cmdList->DrawIndexedInstanced(subMesh.IndexCount, 1, subMesh.IndexStart, 0, 0);
+            }
         }
     }
 }
@@ -265,7 +296,7 @@ bool ScatterScene::BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32
 bool ScatterScene::BuildSceneCB(ID3D12Device* device)
 {
     auto hp = dx12::HeapProperties(D3D12_HEAP_TYPE_UPLOAD);
-    D3D12_RESOURCE_DESC rd = dx12::BufferDesc(256);
+    D3D12_RESOURCE_DESC rd = dx12::BufferDesc(dx12::AlignConstantBufferSize(sizeof(SceneCBData)));
     if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_sceneCB)))) return false;
     D3D12_RANGE rr{0, 0};

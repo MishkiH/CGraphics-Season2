@@ -16,15 +16,14 @@ private:
     {
         AABB Bounds;
         int Children[8]{-1,-1,-1,-1,-1,-1,-1,-1};
-        std::vector<uint32_t> Objects;
+        std::vector<uint32_t> Objects; // Objects owned by this node. Straddling bounds stay here.
 
-        bool IsLeaf() const { return Children[0] == -1; }
+        bool IsLeaf() const;
     };
 
     void Subdivide(int nodeIdx, const std::vector<AABB>& bounds, int depth, int maxDepth, int minPerLeaf);
-    void QueryNode(int nodeIdx, const Frustum& frustum, std::vector<uint32_t>& out, std::vector<bool>& visited) const;
+    void QueryNode(int nodeIdx, const Frustum& frustum, std::vector<uint32_t>& out) const;
 
     std::vector<Node> m_nodes;
     std::vector<AABB> m_objectBounds;
-    uint32_t m_objectCount = 0;
 };

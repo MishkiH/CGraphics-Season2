@@ -63,6 +63,9 @@ private:
     bool BuildMeshGpu(ID3D12Device* device, ID3D12CommandQueue* cmdQueue);
     bool BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32_t height);
     bool BuildSceneCB(ID3D12Device* device);
+    void UpdateSceneConstants(const DirectX::XMFLOAT4X4& viewProj, const DirectX::XMFLOAT3& eyePos);
+    void GatherVisibleInstances(const DirectX::XMFLOAT4X4& viewProj);
+    void DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList);
 
     void UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
                     MeshGpu& gpu, const MeshData& mesh,
@@ -83,6 +86,8 @@ private:
     uint8_t* m_mappedSceneCB = nullptr;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+    std::vector<uint32_t> m_visibleScratch;
+    std::vector<uint32_t> m_visibleByMesh[SceneObjectManager::MeshCount];
     bool m_useFrustum = true;
     bool m_useOctree = true;
     uint32_t m_lastVisible = 0;
