@@ -22,6 +22,11 @@ namespace
         prev = current;
         return fired;
     }
+
+    void SyncKeyState(bool current, bool& prev)
+    {
+        prev = current;
+    }
 }
 
 App::App() = default;
@@ -33,7 +38,7 @@ bool App::Initialize(HINSTANCE hInstance, int nCmdShow)
     m_input = std::make_unique<Input>();
     m_input->Reset();
 
-    if (!m_window->Create(this, hInstance, nCmdShow, 1920, 1200, L"Mini Renderer")) return false;
+    if (!m_window->Create(this, hInstance, nCmdShow, 800, 450, L"Mini Renderer")) return false;
 
     m_secondsPerTick = 1.0 / Qpf();
     m_prevTick = Qpc();
@@ -106,19 +111,32 @@ void App::HandleSceneFeatureHotkeys()
     const bool tDown = m_input->IsKeyDown('T');
     const bool fDown = m_input->IsKeyDown('F');
     const bool oDown = m_input->IsKeyDown('O');
+    auto syncAllFeatureKeys = [&]() {
+        SyncKeyState(nDown, m_prevN);
+        SyncKeyState(mDown, m_prevM);
+        SyncKeyState(tDown, m_prevT);
+        SyncKeyState(fDown, m_prevF);
+        SyncKeyState(oDown, m_prevO);
+    };
 
     if (sceneMode == RenderingSystem::ScatterSceneMode)
     {
-        m_prevN = nDown;
-        m_prevM = mDown;
-        m_prevT = tDown;
+        SyncKeyState(nDown, m_prevN);
+        SyncKeyState(mDown, m_prevM);
+        SyncKeyState(tDown, m_prevT);
         if (JustPressed(fDown, m_prevF)) { m_renderer->ToggleFrustumCulling(); UpdateWindowTitle(); }
         if (JustPressed(oDown, m_prevO)) { m_renderer->ToggleOctreeCulling(); UpdateWindowTitle(); }
         return;
     }
 
-    m_prevF = fDown;
-    m_prevO = oDown;
+    if (sceneMode == RenderingSystem::ParticleSceneMode)
+    {
+        syncAllFeatureKeys();
+        return;
+    }
+
+    SyncKeyState(fDown, m_prevF);
+    SyncKeyState(oDown, m_prevO);
 
     if (JustPressed(nDown, m_prevN))
     {
@@ -239,19 +257,26 @@ void App::ApplySceneCameraPreset(int sceneMode)
 void App::UpdateWindowTitle()
 {
     if (!m_window || !m_renderer) return;
+    const int sceneMode = m_renderer->GetSceneMode();
     wchar_t buf[256];
-    if (m_renderer->GetSceneMode() == RenderingSystem::ScatterSceneMode)
+    if (sceneMode == RenderingSystem::ScatterSceneMode)
     {
         swprintf_s(buf, L"Lab-8  |  Scatter 1300  |  [F] Frustum: %-3s  [O] Octree: %-3s  |  Visible: %u/1300  |  [Tab] Hand scene",
             m_renderer->FrustumCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->OctreeCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->ScatterVisibleCount());
     }
-    else if (m_renderer->GetSceneMode() == RenderingSystem::SponzaSceneMode)
+    else if (sceneMode == RenderingSystem::ParticleSceneMode)
     {
         swprintf_s(
             buf,
-            L"Lab-5/6  |  Sponza Deferred  |  [N] Normals: %-3s  [T] UV FX: %-3s  |  Dir + Point + Spot  |  [Tab] Scatter scene",
+            L"Homework-6  |  Zaya + sparks  |  GPU particles  |  Compute update + Append/Consume + GS billboards  |  [Tab] Scatter scene");
+    }
+    else if (sceneMode == RenderingSystem::SponzaSceneMode)
+    {
+        swprintf_s(
+            buf,
+            L"Lab-5/6  |  Sponza Deferred  |  [N] Normals: %-3s  [T] UV FX: %-3s  |  Dir + Point + Spot  |  [Tab] Particle scene",
             m_sponzaUseNormal ? L"ON" : L"OFF",
             m_renderer->SponzaUvEffectsEnabled() ? L"ON" : L"OFF");
     }

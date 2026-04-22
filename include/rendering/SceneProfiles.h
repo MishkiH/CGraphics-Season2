@@ -115,7 +115,8 @@ namespace scene_profiles
             15.5f,                                 // range
             5.5f,                                  // inner cone angle
             8.5f));                                // outer cone angle
-        return options;    }
+        return options;
+    }
 
     inline CameraPreset GetCameraPresetForScene(int sceneMode)
     {
@@ -123,8 +124,12 @@ namespace scene_profiles
         {
         case 0:
             return {{-340.f, 62.f, -340.f}, 0.82f, -0.11f, 42.f, 0.05f, 2600.f};
+        case 1:
+            return {{-24.f, 8.f, -24.f}, 1.f, 0.f, 8.f, 0.05f, 1000.f};
         case 2:
             return {{-6.5f, 1.7f, -3.5f}, 0.92f, -0.05f, 7.f, 0.05f, 900.f};
+        case 3:
+            return {{-4.6f, 2.35f, -6.3f}, 0.63f, -0.17f, 7.f, 0.05f, 120.f};
         default:
             return {{-24.f, 8.f, -24.f}, 1.f, 0.f, 8.f, 0.05f, 1000.f};
         }

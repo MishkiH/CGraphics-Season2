@@ -14,8 +14,9 @@
 
 class DeferredScene;
 class ScatterScene;
+class ParticleScene;
 
-// Owns device, swap chain, and back buffers. Delegates rendering to DeferredScene or ScatterScene.
+// Owns device, swap chain, and back buffers. Delegates rendering to the active scene.
 class RenderingSystem
 {
 public:
@@ -24,9 +25,10 @@ public:
         ScatterSceneMode = 0,
         HandSceneMode = 1,
         SponzaSceneMode = 2,
+        ParticleSceneMode = 3,
     };
 
-    static constexpr int SceneModeCount = 3;
+    static constexpr int SceneModeCount = 4;
 
     RenderingSystem();
     ~RenderingSystem();
@@ -102,4 +104,5 @@ private:
     std::unique_ptr<DeferredScene> m_handScene;
     std::unique_ptr<DeferredScene> m_sponzaScene;
     std::unique_ptr<ScatterScene> m_scatterScene;
+    std::unique_ptr<ParticleScene> m_particleScene;
 };

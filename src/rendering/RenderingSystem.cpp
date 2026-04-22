@@ -1,5 +1,6 @@
 #include "RenderingSystem.h"
 #include "DeferredScene.h"
+#include "ParticleScene.h"
 #include "ScatterScene.h"
 #include "AssetPath.h"
 #include "Dx12Helpers.h"
@@ -95,6 +96,10 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
                      ResolveAsset("Meshes/shrek/shrek.obj"), ResolveAsset("Meshes/donkey/Donkey.obj")))
         return false;
 
+    m_particleScene = std::make_unique<ParticleScene>();
+    if (!m_particleScene->Initialize(m_device.Get(), m_cmdQueue.Get(), kBackBufferFormat, width, height))
+        return false;
+
     m_initialized = true;
     return true;
 }
@@ -110,6 +115,7 @@ void RenderingSystem::Shutdown()
     if (m_handScene) { m_handScene->Shutdown(); m_handScene.reset(); }
     if (m_sponzaScene) { m_sponzaScene->Shutdown(); m_sponzaScene.reset(); }
     if (m_scatterScene) { m_scatterScene->Shutdown(); m_scatterScene.reset(); }
+    if (m_particleScene) { m_particleScene->Shutdown(); m_particleScene.reset(); }
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
     m_cmdList.Reset();
     m_cmdAlloc.Reset();
@@ -140,6 +146,17 @@ void RenderingSystem::Draw(float dt)
         XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&m_view) * XMLoadFloat4x4(&m_proj));
         m_scatterScene->RecordCommands(m_cmdList.Get(), viewProj, m_eye,
                                         CurrentBackBufferRTV(), m_viewport, m_scissorRect, dt);
+    }
+    else if (m_sceneMode == ParticleSceneMode && m_particleScene)
+    {
+        m_particleScene->RecordCommands(
+            m_cmdList.Get(),
+            m_view,
+            m_proj,
+            CurrentBackBufferRTV(),
+            m_viewport,
+            m_scissorRect,
+            dt);
     }
     else if (m_sceneMode == SponzaSceneMode && m_sponzaScene)
     {
@@ -176,6 +193,7 @@ void RenderingSystem::OnResize(uint32_t width, uint32_t height)
     if (m_handScene) m_handScene->OnResize(m_device.Get(), width, height);
     if (m_sponzaScene) m_sponzaScene->OnResize(m_device.Get(), width, height);
     if (m_scatterScene) m_scatterScene->OnResize(m_device.Get(), width, height);
+    if (m_particleScene) m_particleScene->OnResize(m_device.Get(), width, height);
 }
 
 void RenderingSystem::SetCamera(const XMFLOAT3& eye, float yaw, float pitch)

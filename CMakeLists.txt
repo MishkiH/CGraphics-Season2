@@ -12,6 +12,7 @@ add_executable(dx12_optimization
     src/core/Window.cpp
     src/rendering/DeferredScene.cpp
     src/rendering/GBuffer.cpp
+    src/rendering/ParticleScene.cpp
     src/rendering/RenderingSystem.cpp
     src/rendering/ScatterScene.cpp
     src/assets/ImageLoader.cpp
