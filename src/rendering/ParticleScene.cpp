@@ -18,10 +18,21 @@ namespace
     constexpr uint32_t kThreadGroupSize = 256;
     constexpr uint32_t kDispatchGroups = ParticleScene::MaxParticles / kThreadGroupSize;
     constexpr float kMaxDeltaTime = 1.f / 30.f;
-    constexpr float kEmissionRate = 96.f;
+    constexpr float kEmissionRate = 84.f;
     constexpr uint32_t kMaxEmitPerFrame = 24;
     constexpr float kTargetBunnyHeight = 2.35f;
     constexpr float kFloorHalfExtent = 7.5f;
+    constexpr float kEmitterHeightFactor = 0.80f;
+    constexpr float kEmitterHeightOffset = 0.05f;
+    constexpr float kParticleSpawnRadius = 0.16f;
+    constexpr float kParticleInitialRise = 2.0f;
+    constexpr float kParticleVelocityJitter = 1.0f;
+    constexpr float kParticleGravity = -7.2f;
+    constexpr float kParticleBaseSize = 0.04f;
+    const XMFLOAT4 kSunsetLightDirection{0.28f, -1.f, 0.42f, 0.f};
+    const XMFLOAT4 kSunsetLightColor{0.98f, 0.70f, 0.46f, 1.f};
+    const XMFLOAT4 kSunsetAmbientColor{0.14f, 0.17f, 0.27f, 1.f};
+    constexpr float kSunsetClearColor[4] = {0.18f, 0.22f, 0.33f, 1.f};
     static_assert(
         ParticleScene::MaxParticles % kThreadGroupSize == 0,
         "ParticleScene::MaxParticles must be divisible by the compute thread group size.");
@@ -470,8 +481,8 @@ bool ParticleScene::BuildGeometry(ID3D12Device* device,
             * XMMatrixTranslation(-centerX * scale, -bunnyMesh.BoundsMin.y * scale, -centerZ * scale));
     XMStoreFloat4x4(&m_floorWorld, XMMatrixIdentity());
 
-    m_bunnyHeight = meshHeight * scale;
-    m_emitterPosition = {0.f, m_bunnyHeight * 0.76f, 0.f};
+    const float bunnyHeight = meshHeight * scale;
+    m_emitterPosition = {0.f, bunnyHeight * kEmitterHeightFactor + kEmitterHeightOffset, 0.f};
 
     auto uploadMesh = [&](const MeshData& meshData, MeshGpu& gpu, const XMFLOAT4& fallbackColor) {
         const UINT64 vbSize = static_cast<UINT64>(meshData.Vertices.size()) * sizeof(MeshVertex);
@@ -735,20 +746,10 @@ void ParticleScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X
     XMStoreFloat4(&cb.CameraRight, right);
     XMStoreFloat4(&cb.CameraUp, up);
     XMStoreFloat4(&cb.CameraFacing, XMVectorNegate(forward));
-    cb.LightDirection = {0.42f, -1.f, 0.32f, 0.f};
-    cb.LightColor = {0.96f, 0.94f, 0.90f, 1.f};
-    cb.AmbientColor = {0.38f, 0.40f, 0.44f, 1.f};
+    cb.LightDirection = kSunsetLightDirection;
+    cb.LightColor = kSunsetLightColor;
+    cb.AmbientColor = kSunsetAmbientColor;
     std::memcpy(m_mappedSceneCB, &cb, sizeof(cb));
-}
-
-ParticleScene::DrawConstants ParticleScene::BuildDrawConstants(
-    const XMFLOAT4X4& world,
-    const XMFLOAT4& baseColor) const
-{
-    DrawConstants constants{};
-    constants.World = world;
-    constants.BaseColor = baseColor;
-    return constants;
 }
 
 ParticleScene::UpdateConstants ParticleScene::BuildUpdateConstants(float dt, uint32_t emitCount) const
@@ -759,11 +760,11 @@ ParticleScene::UpdateConstants ParticleScene::BuildUpdateConstants(float dt, uin
     constants.EmitCount = emitCount;
     constants.MaxParticles = MaxParticles;
     constants.EmitterPosition = m_emitterPosition;
-    constants.SpawnRadius = 0.18f;
-    constants.InitialVelocity = {0.f, 2.8f, 0.f};
-    constants.VelocityJitter = 1.45f;
-    constants.Gravity = {0.f, -7.2f, 0.f};
-    constants.BaseSize = 0.08f;
+    constants.SpawnRadius = kParticleSpawnRadius;
+    constants.InitialVelocity = {0.f, kParticleInitialRise, 0.f};
+    constants.VelocityJitter = kParticleVelocityJitter;
+    constants.Gravity = {0.f, kParticleGravity, 0.f};
+    constants.BaseSize = kParticleBaseSize;
     return constants;
 }
 
@@ -862,7 +863,9 @@ void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
 
     for (const MeshDraw& draw : mesh.Draws)
     {
-        const DrawConstants constants = BuildDrawConstants(world, draw.BaseColor);
+        DrawConstants constants{};
+        constants.World = world;
+        constants.BaseColor = draw.BaseColor;
         cmdList->SetGraphicsRoot32BitConstants(
             GraphicsRootDrawConstants,
             sizeof(DrawConstants) / 4u,
@@ -877,12 +880,10 @@ void ParticleScene::RenderScene(ID3D12GraphicsCommandList* cmdList,
                                 D3D12_VIEWPORT viewport,
                                 D3D12_RECT scissorRect)
 {
-    static constexpr float kClearColor[4] = {0.82f, 0.89f, 0.97f, 1.f};
-
     const D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     cmdList->OMSetRenderTargets(1, &backBufferRtv, FALSE, &dsv);
-    cmdList->ClearRenderTargetView(backBufferRtv, kClearColor, 0, nullptr);
+    cmdList->ClearRenderTargetView(backBufferRtv, kSunsetClearColor, 0, nullptr);
     cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.f, 0, 0, nullptr);
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissorRect);

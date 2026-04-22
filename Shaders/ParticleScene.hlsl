@@ -84,7 +84,14 @@ StructuredBuffer<uint> gLiveCount : register(t1);
 ConsumeStructuredBuffer<Particle> gCurrentParticles : register(u0);
 AppendStructuredBuffer<Particle> gNextParticles : register(u1);
 
-static const float kKillPlaneY = 0.02;
+static const float kKillPlaneY = 0.12;
+static const float kParticleLifeMin = 0.44;
+static const float kParticleLifeMax = 0.62;
+static const float kSpawnHeightJitter = 0.06;
+static const float kHorizontalImpulseMin = 0.55;
+static const float kHorizontalImpulseMax = 1.25;
+static const float kVerticalImpulseMin = 0.20;
+static const float kVerticalImpulseMax = 1.00;
 
 uint Hash(uint value)
 {
@@ -236,12 +243,12 @@ void UpdateParticlesCS(uint dispatchId : SV_DispatchThreadID)
     const float3 radial = float3(cos(angle), 0.0, sin(angle));
 
     Particle particle;
-    particle.Position = gEmitterPosition + radial * radius + float3(0.0, rnd2 * 0.12, 0.0);
+    particle.Position = gEmitterPosition + radial * radius + float3(0.0, rnd2 * kSpawnHeightJitter, 0.0);
     particle.Age = 0.0;
     particle.Velocity = gInitialVelocity
-        + radial * (0.7 + rnd2) * gVelocityJitter
-        + float3(0.0, (0.35 + rnd1) * gVelocityJitter, 0.0);
-    particle.Life = lerp(0.65, 1.15, rnd1);
+        + radial * lerp(kHorizontalImpulseMin, kHorizontalImpulseMax, rnd2) * gVelocityJitter
+        + float3(0.0, lerp(kVerticalImpulseMin, kVerticalImpulseMax, rnd1) * gVelocityJitter, 0.0);
+    particle.Life = lerp(kParticleLifeMin, kParticleLifeMax, rnd1);
     particle.Color = float4(
         lerp(float3(0.74, 0.70, 0.62), float3(0.98, 0.93, 0.82), rnd2),
         1.0);

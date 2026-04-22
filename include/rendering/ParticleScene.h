@@ -47,12 +47,12 @@ private:
     struct alignas(256) SceneConstants
     {
         DirectX::XMFLOAT4X4 ViewProj{};
-        DirectX::XMFLOAT4 CameraRight{1.f, 0.f, 0.f, 0.f};
-        DirectX::XMFLOAT4 CameraUp{0.f, 1.f, 0.f, 0.f};
-        DirectX::XMFLOAT4 CameraFacing{0.f, 0.f, -1.f, 0.f};
-        DirectX::XMFLOAT4 LightDirection{0.42f, -1.f, 0.32f, 0.f};
-        DirectX::XMFLOAT4 LightColor{0.96f, 0.94f, 0.90f, 1.f};
-        DirectX::XMFLOAT4 AmbientColor{0.38f, 0.40f, 0.44f, 1.f};
+        DirectX::XMFLOAT4 CameraRight{};
+        DirectX::XMFLOAT4 CameraUp{};
+        DirectX::XMFLOAT4 CameraFacing{};
+        DirectX::XMFLOAT4 LightDirection{};
+        DirectX::XMFLOAT4 LightColor{};
+        DirectX::XMFLOAT4 AmbientColor{};
     };
 
     struct alignas(16) DrawConstants
@@ -68,14 +68,14 @@ private:
         uint32_t EmitCount = 0u;
         uint32_t MaxParticles = 0u;
 
-        DirectX::XMFLOAT3 EmitterPosition{0.f, 0.f, 0.f};
-        float SpawnRadius = 0.18f;
+        DirectX::XMFLOAT3 EmitterPosition{};
+        float SpawnRadius = 0.f;
 
-        DirectX::XMFLOAT3 InitialVelocity{0.f, 2.8f, 0.f};
-        float VelocityJitter = 1.45f;
+        DirectX::XMFLOAT3 InitialVelocity{};
+        float VelocityJitter = 0.f;
 
-        DirectX::XMFLOAT3 Gravity{0.f, -7.2f, 0.f};
-        float BaseSize = 0.08f;
+        DirectX::XMFLOAT3 Gravity{};
+        float BaseSize = 0.f;
     };
 
     struct BufferWithCounter
@@ -116,8 +116,6 @@ private:
     bool BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32_t height);
 
     void UpdateSceneConstants(const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj);
-    DrawConstants BuildDrawConstants(const DirectX::XMFLOAT4X4& world,
-                                     const DirectX::XMFLOAT4& baseColor) const;
     UpdateConstants BuildUpdateConstants(float dt, uint32_t emitCount) const;
 
     void ResetCounter(ID3D12GraphicsCommandList* cmdList, BufferWithCounter& buffer);
@@ -135,7 +133,6 @@ private:
     uint32_t m_currentBufferIndex = 0;
     float m_time = 0.f;
     float m_emitAccumulator = 0.f;
-    float m_bunnyHeight = 2.35f;
     DirectX::XMFLOAT3 m_emitterPosition{0.f, 1.65f, 0.f};
     DirectX::XMFLOAT4X4 m_bunnyWorld{};
     DirectX::XMFLOAT4X4 m_floorWorld{};
