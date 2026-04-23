@@ -18,18 +18,19 @@ namespace
     constexpr uint32_t kThreadGroupSize = 256;
     constexpr uint32_t kDispatchGroups = ParticleScene::MaxParticles / kThreadGroupSize;
     constexpr float kMaxDeltaTime = 1.f / 30.f;
-    constexpr float kEmissionRate = 84.f;
+    constexpr float kEmissionRate = 64.f;
     constexpr uint32_t kMaxEmitPerFrame = 24;
-    constexpr float kTargetBunnyHeight = 2.35f;
-    constexpr float kFloorHalfExtent = 7.5f;
-    constexpr float kEmitterHeightFactor = 0.80f;
-    constexpr float kEmitterHeightOffset = 0.05f;
-    constexpr float kParticleSpawnRadius = 0.16f;
-    constexpr float kParticleInitialRise = 2.0f;
-    constexpr float kParticleVelocityJitter = 1.0f;
-    constexpr float kParticleGravity = -7.2f;
-    constexpr float kParticleBaseSize = 0.04f;
-    const XMFLOAT4 kSunsetLightDirection{0.28f, -1.f, 0.42f, 0.f};
+    constexpr float kTargetBunnyHeight = 31.f;
+    constexpr float kFloorHalfExtent = 70.f;
+    constexpr float kEmitterHeightFactor = 0.85f;
+    constexpr float kEmitterHeightOffset = 0.9f;
+    constexpr float kParticleSpawnRadius = 1.f;
+    constexpr float kParticleInitialRise = 4.8f;
+    constexpr float kParticleVelocityJitter = 4.0f;
+    constexpr float kParticleGravity = -7.8f;
+    constexpr float kParticleBaseSize = 0.26f;
+    constexpr float kFloorCheckerTileSize = 14.f;
+    const XMFLOAT4 kSunsetLightDirection{-0.28f, -1.f, -0.42f, 0.f};
     const XMFLOAT4 kSunsetLightColor{0.98f, 0.70f, 0.46f, 1.f};
     const XMFLOAT4 kSunsetAmbientColor{0.14f, 0.17f, 0.27f, 1.f};
     constexpr float kSunsetClearColor[4] = {0.18f, 0.22f, 0.33f, 1.f};
@@ -172,7 +173,7 @@ namespace
         SubMesh subMesh;
         subMesh.IndexStart = 0;
         subMesh.IndexCount = static_cast<uint32_t>(mesh.Indices.size());
-        subMesh.Material.Kd = {0.56f, 0.57f, 0.60f};
+        subMesh.Material.Kd = {0.22f, 0.08f, 0.11f};
         mesh.SubMeshes.push_back(subMesh);
 
         mesh.BoundsMin = {-kFloorHalfExtent, 0.f, -kFloorHalfExtent};
@@ -478,7 +479,7 @@ bool ParticleScene::BuildGeometry(ID3D12Device* device,
     XMStoreFloat4x4(
         &m_bunnyWorld,
         XMMatrixScaling(scale, scale, scale)
-            * XMMatrixTranslation(-centerX * scale, -bunnyMesh.BoundsMin.y * scale, -centerZ * scale));
+            * XMMatrixTranslation(-centerX * scale, -bunnyMesh.BoundsMin.y * scale - 0.1f, -centerZ * scale));
     XMStoreFloat4x4(&m_floorWorld, XMMatrixIdentity());
 
     const float bunnyHeight = meshHeight * scale;
@@ -521,7 +522,7 @@ bool ParticleScene::BuildGeometry(ID3D12Device* device,
     };
 
     uploadMesh(bunnyMesh, m_bunnyMesh, {0.82f, 0.80f, 0.75f, 1.f});
-    uploadMesh(BuildFloorMesh(), m_floorMesh, {0.56f, 0.57f, 0.60f, 1.f});
+    uploadMesh(BuildFloorMesh(), m_floorMesh, {0.22f, 0.08f, 0.11f, 1.f});
     return true;
 }
 
@@ -643,7 +644,7 @@ bool ParticleScene::BuildPipelineStates(ID3D12Device* device, DXGI_FORMAT backBu
 
     D3D12_RASTERIZER_DESC meshRaster{};
     meshRaster.FillMode = D3D12_FILL_MODE_SOLID;
-    meshRaster.CullMode = D3D12_CULL_MODE_BACK;
+    meshRaster.CullMode = D3D12_CULL_MODE_NONE;
     meshRaster.DepthClipEnable = TRUE;
 
     D3D12_RASTERIZER_DESC particleRaster{};
@@ -856,7 +857,8 @@ void ParticleScene::UpdateParticles(ID3D12GraphicsCommandList* cmdList, float dt
 
 void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
                              const MeshGpu& mesh,
-                             const XMFLOAT4X4& world)
+                             const XMFLOAT4X4& world,
+                             bool isFloor)
 {
     cmdList->IASetVertexBuffers(0, 1, &mesh.Vbv);
     cmdList->IASetIndexBuffer(&mesh.Ibv);
@@ -866,6 +868,8 @@ void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
         DrawConstants constants{};
         constants.World = world;
         constants.BaseColor = draw.BaseColor;
+        constants.CheckerTileSize = isFloor ? kFloorCheckerTileSize : 0.f;
+        constants.IsFloor = isFloor ? 1.f : 0.f;
         cmdList->SetGraphicsRoot32BitConstants(
             GraphicsRootDrawConstants,
             sizeof(DrawConstants) / 4u,
@@ -892,8 +896,8 @@ void ParticleScene::RenderScene(ID3D12GraphicsCommandList* cmdList,
 
     cmdList->SetPipelineState(m_meshPso.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    DrawMesh(cmdList, m_floorMesh, m_floorWorld);
-    DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld);
+    DrawMesh(cmdList, m_floorMesh, m_floorWorld, true);
+    DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false);
 
     ID3D12DescriptorHeap* heaps[] = {m_descriptorHeap.Get()};
     cmdList->SetDescriptorHeaps(1, heaps);

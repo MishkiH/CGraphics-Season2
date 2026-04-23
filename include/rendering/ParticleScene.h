@@ -59,6 +59,9 @@ private:
     {
         DirectX::XMFLOAT4X4 World{};
         DirectX::XMFLOAT4 BaseColor{1.f, 1.f, 1.f, 1.f};
+        float CheckerTileSize = 0.f;
+        float IsFloor = 0.f;
+        DirectX::XMFLOAT2 Padding{0.f, 0.f};
     };
 
     struct alignas(16) UpdateConstants
@@ -123,7 +126,8 @@ private:
     void UpdateParticles(ID3D12GraphicsCommandList* cmdList, float dt);
     void DrawMesh(ID3D12GraphicsCommandList* cmdList,
                   const MeshGpu& mesh,
-                  const DirectX::XMFLOAT4X4& world);
+                  const DirectX::XMFLOAT4X4& world,
+                  bool isFloor);
     void RenderScene(ID3D12GraphicsCommandList* cmdList,
                      D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
                      D3D12_VIEWPORT viewport,

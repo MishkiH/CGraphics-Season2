@@ -13,6 +13,9 @@ cbuffer DrawCB : register(b1)
 {
     row_major float4x4 gWorld;
     float4 gBaseColor;
+    float gCheckerTileSize;
+    float gIsFloor;
+    float2 gDrawPadding;
 };
 
 cbuffer UpdateCB : register(b2)
@@ -43,6 +46,7 @@ struct MeshVSIn
 struct MeshVSOut
 {
     float4 PosH    : SV_POSITION;
+    float3 PosW    : TEXCOORD0;
     float3 NormalW : NORMAL;
 };
 
@@ -51,6 +55,7 @@ MeshVSOut MeshVS(MeshVSIn vin)
     MeshVSOut vout;
     float4 posW = mul(float4(vin.Pos, 1.0), gWorld);
     vout.PosH = mul(posW, gViewProj);
+    vout.PosW = posW.xyz;
     vout.NormalW = normalize(mul(vin.Normal, (float3x3)gWorld));
     return vout;
 }
@@ -62,8 +67,18 @@ float4 MeshPS(MeshVSOut pin) : SV_Target
     const float diffuse = saturate(dot(N, L));
     const float skyBounce = saturate(N.y * 0.5 + 0.5);
 
-    float3 litColor = gBaseColor.rgb * (gAmbientColor.rgb + gLightColor.rgb * diffuse);
-    litColor += gBaseColor.rgb * (0.08 * skyBounce);
+    float3 baseColor = gBaseColor.rgb;
+    if (gIsFloor > 0.5)
+    {
+        const int2 tileCoord = int2(floor(pin.PosW.xz / max(gCheckerTileSize, 0.001)));
+        const bool isEvenTile = (((tileCoord.x + tileCoord.y) & 1) == 0);
+        const float3 darkLettuce = float3(0.34, 0.46, 0.16);
+        const float3 darkBrown = float3(0.40, 0.27, 0.16);
+        baseColor = isEvenTile ? darkLettuce : darkBrown;
+    }
+
+    float3 litColor = baseColor * (gAmbientColor.rgb + gLightColor.rgb * diffuse);
+    litColor += baseColor * (0.08 * skyBounce);
     return float4(saturate(litColor), 1.0);
 }
 
@@ -85,13 +100,13 @@ ConsumeStructuredBuffer<Particle> gCurrentParticles : register(u0);
 AppendStructuredBuffer<Particle> gNextParticles : register(u1);
 
 static const float kKillPlaneY = 0.12;
-static const float kParticleLifeMin = 0.44;
-static const float kParticleLifeMax = 0.62;
-static const float kSpawnHeightJitter = 0.06;
-static const float kHorizontalImpulseMin = 0.55;
-static const float kHorizontalImpulseMax = 1.25;
-static const float kVerticalImpulseMin = 0.20;
-static const float kVerticalImpulseMax = 1.00;
+static const float kParticleLifeMin = 0.3;
+static const float kParticleLifeMax = 0.5;
+static const float kSpawnHeightJitter = 0.15;
+static const float kHorizontalImpulseMin = 1.8;
+static const float kHorizontalImpulseMax = 3.8;
+static const float kVerticalImpulseMin = 0.35;
+static const float kVerticalImpulseMax = 1.3;
 
 uint Hash(uint value)
 {

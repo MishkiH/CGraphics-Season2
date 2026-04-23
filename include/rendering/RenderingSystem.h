@@ -22,10 +22,10 @@ class RenderingSystem
 public:
     enum SceneMode : int
     {
-        ScatterSceneMode = 0,
-        HandSceneMode = 1,
-        SponzaSceneMode = 2,
-        ParticleSceneMode = 3,
+        ParticleSceneMode = 0,
+        ScatterSceneMode = 1,
+        HandSceneMode = 2,
+        SponzaSceneMode = 3,
     };
 
     static constexpr int SceneModeCount = 4;

@@ -52,7 +52,7 @@ bool App::Initialize(HINSTANCE hInstance, int nCmdShow)
                                  (uint32_t)(rc.bottom - rc.top)))
         return false;
 
-    ApplySceneCameraPreset(RenderingSystem::ScatterSceneMode);
+    ApplySceneCameraPreset(RenderingSystem::ParticleSceneMode);
     ApplyHandRenderMode();
     ApplySponzaRenderMode();
     ApplySponzaUvEffects();
@@ -270,13 +270,13 @@ void App::UpdateWindowTitle()
     {
         swprintf_s(
             buf,
-            L"Homework-6  |  Zaya + sparks  |  GPU particles  |  Compute update + Append/Consume + GS billboards  |  [Tab] Scatter scene");
+            L"Lab-10  |  Zaya + sparks  |  GPU particles  |  Compute update + Append/Consume + GS billboards  |  [Tab] Scatter scene");
     }
     else if (sceneMode == RenderingSystem::SponzaSceneMode)
     {
         swprintf_s(
             buf,
-            L"Lab-5/6  |  Sponza Deferred  |  [N] Normals: %-3s  [T] UV FX: %-3s  |  Dir + Point + Spot  |  [Tab] Particle scene",
+            L"Lab-5/6  |  Sponza Deferred  |  [N] Normals: %-3s  [T] UV FX: %-3s  |  Dir + Point + Spot  |  [Tab] Lab-10",
             m_sponzaUseNormal ? L"ON" : L"OFF",
             m_renderer->SponzaUvEffectsEnabled() ? L"ON" : L"OFF");
     }

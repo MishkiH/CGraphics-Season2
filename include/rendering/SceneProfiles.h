@@ -123,15 +123,15 @@ namespace scene_profiles
         switch (sceneMode)
         {
         case 0:
-            return {{-340.f, 62.f, -340.f}, 0.82f, -0.11f, 42.f, 0.05f, 2600.f};
+            return {{19.1f, 18.f, 40.3f}, -2.70f, -0.20f, 22.f, 0.05f, 520.f};
         case 1:
-            return {{-24.f, 8.f, -24.f}, 1.f, 0.f, 8.f, 0.05f, 1000.f};
+            return {{-340.f, 62.f, -340.f}, 0.82f, -0.11f, 42.f, 0.05f, 2600.f};
         case 2:
-            return {{-6.5f, 1.7f, -3.5f}, 0.92f, -0.05f, 7.f, 0.05f, 900.f};
-        case 3:
-            return {{-4.6f, 2.35f, -6.3f}, 0.63f, -0.17f, 7.f, 0.05f, 120.f};
-        default:
             return {{-24.f, 8.f, -24.f}, 1.f, 0.f, 8.f, 0.05f, 1000.f};
+        case 3:
+            return {{-6.5f, 1.7f, -3.5f}, 0.92f, -0.05f, 7.f, 0.05f, 900.f};
+        default:
+            return {{-9.2f, 4.7f, -12.6f}, 0.63f, -0.17f, 10.f, 0.05f, 220.f};
         }
     }
 }
