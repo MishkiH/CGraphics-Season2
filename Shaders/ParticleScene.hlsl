@@ -99,9 +99,12 @@ StructuredBuffer<uint> gLiveCount : register(t1);
 ConsumeStructuredBuffer<Particle> gCurrentParticles : register(u0);
 AppendStructuredBuffer<Particle> gNextParticles : register(u1);
 
-static const float kKillPlaneY = 0.12;
-static const float kParticleLifeMin = 0.3;
-static const float kParticleLifeMax = 0.5;
+static const float kGroundY = 0.0;
+static const float kBounceVelocityScale = 0.34;
+static const float kGroundFriction = 0.78;
+static const float kSimulationTimeScale = 3.0;
+static const float kParticleLifeMin = 4.8;
+static const float kParticleLifeMax = 6.2;
 static const float kSpawnHeightJitter = 0.15;
 static const float kHorizontalImpulseMin = 1.8;
 static const float kHorizontalImpulseMax = 3.8;
@@ -226,6 +229,7 @@ float4 ParticlePS(ParticleGsOut pin) : SV_Target
 [numthreads(256, 1, 1)]
 void UpdateParticlesCS(uint dispatchId : SV_DispatchThreadID)
 {
+    const float simDt = gDeltaTime * kSimulationTimeScale;
     const uint liveCount = gLiveCount[0];
     const uint freeSlots = (liveCount < gMaxParticles) ? (gMaxParticles - liveCount) : 0u;
     const uint spawnCount = min(gEmitCount, freeSlots);
@@ -233,14 +237,31 @@ void UpdateParticlesCS(uint dispatchId : SV_DispatchThreadID)
     if (dispatchId < liveCount)
     {
         Particle particle = gCurrentParticles.Consume();
-        particle.Age += gDeltaTime;
+        particle.Age += simDt;
 
         if (particle.Age < particle.Life)
         {
-            particle.Velocity += gGravity * gDeltaTime;
-            particle.Position += particle.Velocity * gDeltaTime;
+            particle.Velocity += gGravity * simDt;
+            particle.Position += particle.Velocity * simDt;
+            bool keepParticle = true;
 
-            if (particle.Position.y > kKillPlaneY)
+            if (particle.Position.y <= kGroundY)
+            {
+                if (particle.Padding.x < 0.5 && particle.Velocity.y < 0.0)
+                {
+                    particle.Position.y = kGroundY;
+                    particle.Velocity.x *= kGroundFriction;
+                    particle.Velocity.z *= kGroundFriction;
+                    particle.Velocity.y = abs(particle.Velocity.y) * kBounceVelocityScale;
+                    particle.Padding.x = 1.0;
+                }
+                else
+                {
+                    keepParticle = false;
+                }
+            }
+
+            if (keepParticle)
                 gNextParticles.Append(particle);
         }
     }
