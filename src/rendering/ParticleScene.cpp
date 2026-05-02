@@ -45,7 +45,8 @@ namespace
         DescriptorLiveCountSrv = 2,
         DescriptorParticle0Uav = 3,
         DescriptorParticle1Uav = 4,
-        DescriptorCount = 5,
+        DescriptorShadowMapSrv = 5,
+        DescriptorCount = 6,
     };
 
     enum GraphicsRootParam : uint32_t
@@ -54,6 +55,7 @@ namespace
         GraphicsRootDrawConstants = 1,
         GraphicsRootParticlesSrv = 2,
         GraphicsRootCountSrv = 3,
+        GraphicsRootShadowMapSrv = 4,
     };
 
     enum ComputeRootParam : uint32_t
@@ -223,6 +225,17 @@ bool ParticleScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueu
     if (!BuildShaders()) return false;
     if (!BuildPipelineStates(device, backBufferFmt)) return false;
     if (!BuildDepthBuffer(device, width, height)) return false;
+    if (!InitializeShadows(device)) return false;
+    CreateShadowSrv(
+        device,
+        OffsetCpuHandle(
+            m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_descriptorStride,
+            DescriptorShadowMapSrv));
+    m_shadowMapSrvGpu = OffsetGpuHandle(
+        m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+        m_descriptorStride,
+        DescriptorShadowMapSrv);
 
     dx12::ExecuteAndWait(device, cmdQueue, uploadList.Get());
     return true;
@@ -237,6 +250,7 @@ void ParticleScene::Shutdown()
     }
 
     m_dsvHeap.Reset();
+    ShutdownShadows();
     m_depthBuffer.Reset();
     m_zeroUpload.Reset();
     m_sceneCB.Reset();
@@ -260,12 +274,14 @@ void ParticleScene::Shutdown()
     m_descriptorHeap.Reset();
     m_meshVs.Reset();
     m_meshPs.Reset();
+    m_shadowVs.Reset();
     m_particleVs.Reset();
     m_particleGs.Reset();
     m_particlePs.Reset();
     m_updateCs.Reset();
     m_meshPso.Reset();
     m_particlePso.Reset();
+    m_shadowPso.Reset();
     m_updatePso.Reset();
     m_graphicsRootSig.Reset();
     m_computeRootSig.Reset();
@@ -290,6 +306,7 @@ void ParticleScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
 {
     UpdateSceneConstants(view, proj);
     UpdateParticles(cmdList, dt);
+    RenderShadowMaps(cmdList);
     RenderScene(cmdList, backBufferRtv, viewport, scissorRect);
 }
 
@@ -326,6 +343,7 @@ bool ParticleScene::BuildShaders()
 
     return compile("MeshVS", "vs_5_0", m_meshVs)
         && compile("MeshPS", "ps_5_0", m_meshPs)
+        && compile("ShadowVS", "vs_5_0", m_shadowVs)
         && compile("ParticleVS", "vs_5_0", m_particleVs)
         && compile("ParticleGS", "gs_5_0", m_particleGs)
         && compile("ParticlePS", "ps_5_0", m_particlePs)
@@ -559,7 +577,13 @@ bool ParticleScene::BuildRootSignatures(ID3D12Device* device)
     countRange.BaseShaderRegister = 1;
     countRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER graphicsParams[4]{};
+    D3D12_DESCRIPTOR_RANGE shadowRange{};
+    shadowRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shadowRange.NumDescriptors = 1;
+    shadowRange.BaseShaderRegister = 2;
+    shadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER graphicsParams[5]{};
     graphicsParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     graphicsParams[0].Descriptor.ShaderRegister = 0;
     graphicsParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -579,9 +603,28 @@ bool ParticleScene::BuildRootSignatures(ID3D12Device* device)
     graphicsParams[3].DescriptorTable.pDescriptorRanges = &countRange;
     graphicsParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
+    graphicsParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    graphicsParams[4].DescriptorTable.NumDescriptorRanges = 1;
+    graphicsParams[4].DescriptorTable.pDescriptorRanges = &shadowRange;
+    graphicsParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC shadowSampler{};
+    shadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    shadowSampler.MinLOD = 0.f;
+    shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
+    shadowSampler.ShaderRegister = 0;
+    shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     D3D12_ROOT_SIGNATURE_DESC graphicsDesc{};
     graphicsDesc.NumParameters = static_cast<UINT>(_countof(graphicsParams));
     graphicsDesc.pParameters = graphicsParams;
+    graphicsDesc.NumStaticSamplers = 1;
+    graphicsDesc.pStaticSamplers = &shadowSampler;
     graphicsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     if (!CreateRootSignature(device, graphicsDesc, m_graphicsRootSig))
@@ -647,6 +690,10 @@ bool ParticleScene::BuildPipelineStates(ID3D12Device* device, DXGI_FORMAT backBu
     meshRaster.CullMode = D3D12_CULL_MODE_NONE;
     meshRaster.DepthClipEnable = TRUE;
 
+    D3D12_RASTERIZER_DESC shadowRaster = meshRaster;
+    shadowRaster.DepthBias = 2500;
+    shadowRaster.SlopeScaledDepthBias = 2.f;
+
     D3D12_RASTERIZER_DESC particleRaster{};
     particleRaster.FillMode = D3D12_FILL_MODE_SOLID;
     particleRaster.CullMode = D3D12_CULL_MODE_NONE;
@@ -667,6 +714,21 @@ bool ParticleScene::BuildPipelineStates(ID3D12Device* device, DXGI_FORMAT backBu
     meshDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     meshDesc.SampleDesc.Count = 1;
     if (FAILED(device->CreateGraphicsPipelineState(&meshDesc, IID_PPV_ARGS(&m_meshPso))))
+        return false;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowDesc{};
+    shadowDesc.pRootSignature = m_graphicsRootSig.Get();
+    shadowDesc.VS = {m_shadowVs->GetBufferPointer(), m_shadowVs->GetBufferSize()};
+    shadowDesc.InputLayout = {kMeshLayout, static_cast<UINT>(_countof(kMeshLayout))};
+    shadowDesc.BlendState = blend;
+    shadowDesc.SampleMask = UINT_MAX;
+    shadowDesc.RasterizerState = shadowRaster;
+    shadowDesc.DepthStencilState = depth;
+    shadowDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    shadowDesc.NumRenderTargets = 0;
+    shadowDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    shadowDesc.SampleDesc.Count = 1;
+    if (FAILED(device->CreateGraphicsPipelineState(&shadowDesc, IID_PPV_ARGS(&m_shadowPso))))
         return false;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC particleDesc{};
@@ -734,6 +796,7 @@ void ParticleScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X
     const XMMATRIX projMatrix = XMLoadFloat4x4(&proj);
     const XMMATRIX viewProj = viewMatrix * projMatrix;
     const XMMATRIX invView = XMMatrixInverse(nullptr, viewMatrix);
+    UpdateShadows(view, proj, kSunsetLightDirection);
 
     const XMVECTOR right = XMVector3Normalize(
         XMVector3TransformNormal(XMVectorSet(1.f, 0.f, 0.f, 0.f), invView));
@@ -744,6 +807,12 @@ void ParticleScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X
 
     SceneConstants cb{};
     XMStoreFloat4x4(&cb.ViewProj, viewProj);
+    cb.View = view;
+    const ShadowConstants& shadowConstants = GetShadowConstants();
+    for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade)
+        cb.LightViewProj[cascade] = shadowConstants.LightViewProj[cascade];
+    cb.CascadeFar = shadowConstants.CascadeFar;
+    cb.ShadowParams = shadowConstants.ShadowParams;
     XMStoreFloat4(&cb.CameraRight, right);
     XMStoreFloat4(&cb.CameraUp, up);
     XMStoreFloat4(&cb.CameraFacing, XMVectorNegate(forward));
@@ -858,7 +927,8 @@ void ParticleScene::UpdateParticles(ID3D12GraphicsCommandList* cmdList, float dt
 void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
                              const MeshGpu& mesh,
                              const XMFLOAT4X4& world,
-                             bool isFloor)
+                             bool isFloor,
+                             uint32_t shadowCascadeIndex)
 {
     cmdList->IASetVertexBuffers(0, 1, &mesh.Vbv);
     cmdList->IASetIndexBuffer(&mesh.Ibv);
@@ -870,6 +940,7 @@ void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
         constants.BaseColor = draw.BaseColor;
         constants.CheckerTileSize = isFloor ? kFloorCheckerTileSize : 0.f;
         constants.IsFloor = isFloor ? 1.f : 0.f;
+        constants.ShadowCascadeIndex = static_cast<float>(shadowCascadeIndex);
         cmdList->SetGraphicsRoot32BitConstants(
             GraphicsRootDrawConstants,
             sizeof(DrawConstants) / 4u,
@@ -877,6 +948,22 @@ void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
             0);
         cmdList->DrawIndexedInstanced(draw.IndexCount, 1, draw.IndexStart, 0, 0);
     }
+}
+
+void ParticleScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList)
+{
+    RecordShadowPass(
+        cmdList,
+        [&]() {
+            cmdList->SetGraphicsRootSignature(m_graphicsRootSig.Get());
+            cmdList->SetGraphicsRootConstantBufferView(GraphicsRootSceneCb, m_sceneCB->GetGPUVirtualAddress());
+            cmdList->SetPipelineState(m_shadowPso.Get());
+            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        },
+        [&](uint32_t cascade) {
+            DrawMesh(cmdList, m_floorMesh, m_floorWorld, true, cascade);
+            DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false, cascade);
+        });
 }
 
 void ParticleScene::RenderScene(ID3D12GraphicsCommandList* cmdList,
@@ -894,13 +981,15 @@ void ParticleScene::RenderScene(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootSignature(m_graphicsRootSig.Get());
     cmdList->SetGraphicsRootConstantBufferView(GraphicsRootSceneCb, m_sceneCB->GetGPUVirtualAddress());
 
+    ID3D12DescriptorHeap* heaps[] = {m_descriptorHeap.Get()};
+    cmdList->SetDescriptorHeaps(1, heaps);
+    cmdList->SetGraphicsRootDescriptorTable(GraphicsRootShadowMapSrv, m_shadowMapSrvGpu);
+
     cmdList->SetPipelineState(m_meshPso.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     DrawMesh(cmdList, m_floorMesh, m_floorWorld, true);
     DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false);
 
-    ID3D12DescriptorHeap* heaps[] = {m_descriptorHeap.Get()};
-    cmdList->SetDescriptorHeaps(1, heaps);
     cmdList->SetPipelineState(m_particlePso.Get());
     cmdList->SetGraphicsRootConstantBufferView(GraphicsRootSceneCb, m_sceneCB->GetGPUVirtualAddress());
     cmdList->SetGraphicsRootDescriptorTable(

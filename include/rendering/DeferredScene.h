@@ -15,8 +15,9 @@
 #include <string>
 #include <vector>
 #include "GBuffer.h"
+#include "ShadowedScene.h"
 
-class DeferredScene
+class DeferredScene : private ShadowedScene
 {
 public:
     enum RenderFeature : int
@@ -87,8 +88,12 @@ private:
     struct alignas(16) PassConstants
     {
         DirectX::XMFLOAT4X4 World{};
+        DirectX::XMFLOAT4X4 View{};
         DirectX::XMFLOAT4X4 ViewProj{};
         DirectX::XMFLOAT4X4 InvViewProj{};
+        DirectX::XMFLOAT4X4 LightViewProj[ShadowCascadeCount]{};
+        DirectX::XMFLOAT4 CascadeFar{};
+        DirectX::XMFLOAT4 ShadowParams{};
         DirectX::XMFLOAT4 EyePosW{0.f, 0.f, 0.f, 1.f};
         DirectX::XMFLOAT4 RenderTargetSize{1.f, 1.f, 1.f, 1.f};
         DirectX::XMFLOAT4 TessParams{1.f, 6.f, 0.5f, 15.f};
@@ -134,6 +139,7 @@ private:
     bool BuildShaders(ID3D12Device* device);
     bool BuildRootSignature(ID3D12Device* device);
     bool BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt);
+    bool BuildLightingSrvHeap(ID3D12Device* device);
     bool BuildSceneGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
                             std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploads);
     bool BuildWaterGeometry(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
@@ -143,13 +149,18 @@ private:
     void UpdatePassConstants(uint32_t width, uint32_t height);
     void UpdateLightConstants(float dt);
     int EffectiveRenderMode() const;
+    void RenderShadowMaps(ID3D12GraphicsCommandList* cmdList);
+    void DrawSceneGeometryDepthOnly(ID3D12GraphicsCommandList* cmdList, uint32_t cascadeIndex);
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_geometryPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_lightingPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_waterPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_shadowPSO;
 
     Microsoft::WRL::ComPtr<ID3DBlob> m_geometryVS, m_geometryFlatVS, m_geometryPS;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_shadowVS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_hullShader, m_domainShader;
     Microsoft::WRL::ComPtr<ID3DBlob> m_lightingVS, m_lightingPS;
     Microsoft::WRL::ComPtr<ID3DBlob> m_waterVS, m_waterHS, m_waterDS, m_waterPS;
@@ -176,6 +187,9 @@ private:
     uint8_t* m_mappedLightCB = nullptr;
 
     std::unique_ptr<GBuffer> m_gBuffer;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_lightingSrvHeap;
+    uint32_t m_lightingSrvStride = 0;
+    D3D12_GPU_DESCRIPTOR_HANDLE m_shadowMapSrvGpu{};
 
     DirectX::XMFLOAT4X4 m_view{};
     DirectX::XMFLOAT4X4 m_proj{};

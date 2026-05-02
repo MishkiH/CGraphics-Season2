@@ -22,6 +22,7 @@ public:
 
     ID3D12DescriptorHeap* GetSrvHeap() const { return m_srvHeap.Get(); }
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvTable() const { return m_srvHeap->GetGPUDescriptorHandleForHeapStart(); }
+    D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuTable() const { return m_srvHeap->GetCPUDescriptorHandleForHeapStart(); }
     D3D12_CPU_DESCRIPTOR_HANDLE GetDsv() const { return m_dsvHeap->GetCPUDescriptorHandleForHeapStart(); }
     D3D12_CPU_DESCRIPTOR_HANDLE GetDsvReadOnly() const
     {

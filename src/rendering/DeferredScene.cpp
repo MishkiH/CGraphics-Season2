@@ -93,6 +93,8 @@ bool DeferredScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueu
 
     m_gBuffer = std::make_unique<GBuffer>();
     m_gBuffer->Initialize(device, width, height);
+    if (!InitializeShadows(device)) return false;
+    if (!BuildLightingSrvHeap(device)) return false;
 
     if (!BuildPSOs(device, backBufferFmt)) return false;
 
@@ -104,12 +106,18 @@ void DeferredScene::Shutdown()
 {
     if (m_mappedPassCB) { m_passCB->Unmap(0, nullptr); m_mappedPassCB = nullptr; }
     if (m_mappedLightCB) { m_lightCB->Unmap(0, nullptr); m_mappedLightCB = nullptr; }
+    ShutdownShadows();
+    m_lightingSrvHeap.Reset();
     if (m_gBuffer) { m_gBuffer->Shutdown(); m_gBuffer.reset(); }
 }
 
 void DeferredScene::OnResize(ID3D12Device* device, uint32_t width, uint32_t height)
 {
-    if (m_gBuffer) m_gBuffer->Resize(device, width, height);
+    if (m_gBuffer)
+    {
+        m_gBuffer->Resize(device, width, height);
+        BuildLightingSrvHeap(device);
+    }
 }
 
 void DeferredScene::SetCamera(const XMFLOAT4X4& view, const XMFLOAT4X4& proj, const XMFLOAT3& eye)
@@ -123,6 +131,7 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
 {
     UpdateLightConstants(dt);
     UpdatePassConstants((uint32_t)vp.Width, (uint32_t)vp.Height);
+    RenderShadowMaps(cmdList);
 
     cmdList->RSSetViewports(1, &vp);
     cmdList->RSSetScissorRects(1, &sr);
@@ -178,9 +187,10 @@ void DeferredScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootConstantBufferView(0, m_passCB->GetGPUVirtualAddress());
     cmdList->SetGraphicsRootConstantBufferView(3, m_lightCB->GetGPUVirtualAddress());
 
-    ID3D12DescriptorHeap* gbHeaps[] = {m_gBuffer->GetSrvHeap()};
+    ID3D12DescriptorHeap* gbHeaps[] = {m_lightingSrvHeap.Get()};
     cmdList->SetDescriptorHeaps(1, gbHeaps);
-    cmdList->SetGraphicsRootDescriptorTable(4, m_gBuffer->GetSrvTable());
+    cmdList->SetGraphicsRootDescriptorTable(4, m_lightingSrvHeap->GetGPUDescriptorHandleForHeapStart());
+    cmdList->SetGraphicsRootDescriptorTable(7, m_shadowMapSrvGpu);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->DrawInstanced(3, 1, 0, 0);
 
@@ -229,6 +239,7 @@ bool DeferredScene::BuildShaders(ID3D12Device*)
 
     return compile("GeometryVS", "vs_5_0", m_geometryVS)
         && compile("GeometryFlatVS", "vs_5_0", m_geometryFlatVS)
+        && compile("ShadowVS", "vs_5_0", m_shadowVS)
         && compile("GeometryHS", "hs_5_0", m_hullShader)
         && compile("GeometryDS", "ds_5_0", m_domainShader)
         && compile("GeometryPS", "ps_5_0", m_geometryPS)
@@ -253,8 +264,9 @@ bool DeferredScene::BuildRootSignature(ID3D12Device* device)
     D3D12_DESCRIPTOR_RANGE gbRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBuffer::SrvCount, 3, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
     D3D12_DESCRIPTOR_RANGE normRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
     D3D12_DESCRIPTOR_RANGE dispRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
+    D3D12_DESCRIPTOR_RANGE shadowRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
 
-    D3D12_ROOT_PARAMETER params[7]{};
+    D3D12_ROOT_PARAMETER params[8]{};
 
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[0].Descriptor.ShaderRegister = 0;
@@ -292,21 +304,58 @@ bool DeferredScene::BuildRootSignature(ID3D12Device* device)
     params[6].DescriptorTable.pDescriptorRanges = &dispRange;
     params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    D3D12_STATIC_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxAnisotropy = 1; sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX; sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[7].DescriptorTable.NumDescriptorRanges = 1;
+    params[7].DescriptorTable.pDescriptorRanges = &shadowRange;
+    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC samplers[2]{};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 1;
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc{};
-    desc.NumParameters = 7; desc.pParameters = params;
-    desc.NumStaticSamplers = 1; desc.pStaticSamplers = &sampler;
+    desc.NumParameters = static_cast<UINT>(_countof(params)); desc.pParameters = params;
+    desc.NumStaticSamplers = static_cast<UINT>(_countof(samplers)); desc.pStaticSamplers = samplers;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> blob, err;
     HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
     if (FAILED(hr)) { if (err) throw std::runtime_error((const char*)err->GetBufferPointer()); return false; }
-    return SUCCEEDED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
+    if (FAILED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig))))
+        return false;
+
+    D3D12_ROOT_PARAMETER shadowParams[2]{};
+    shadowParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    shadowParams[0].Descriptor.ShaderRegister = 0;
+    shadowParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    shadowParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    shadowParams[1].Constants.ShaderRegister = 3;
+    shadowParams[1].Constants.Num32BitValues = 1;
+    shadowParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC shadowDesc{};
+    shadowDesc.NumParameters = static_cast<UINT>(_countof(shadowParams));
+    shadowDesc.pParameters = shadowParams;
+    shadowDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    blob.Reset();
+    err.Reset();
+    hr = D3D12SerializeRootSignature(&shadowDesc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
+    if (FAILED(hr)) { if (err) throw std::runtime_error((const char*)err->GetBufferPointer()); return false; }
+    return SUCCEEDED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_shadowRootSig)));
 }
 
 bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
@@ -352,6 +401,24 @@ bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
     geoPso.SampleDesc = {1, 0};
     dx12::ThrowIfFailed(device->CreateGraphicsPipelineState(&geoPso, IID_PPV_ARGS(&m_geometryPSO)), "Geometry PSO");
 
+    D3D12_RASTERIZER_DESC shadowRaster = raster;
+    shadowRaster.DepthBias = 2500;
+    shadowRaster.SlopeScaledDepthBias = 2.f;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowPso{};
+    shadowPso.pRootSignature = m_shadowRootSig.Get();
+    shadowPso.VS = {m_shadowVS->GetBufferPointer(), m_shadowVS->GetBufferSize()};
+    shadowPso.BlendState = blendOff;
+    shadowPso.SampleMask = UINT_MAX;
+    shadowPso.RasterizerState = shadowRaster;
+    shadowPso.DepthStencilState = geoDepth;
+    shadowPso.InputLayout = {m_inputLayout, 4};
+    shadowPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    shadowPso.NumRenderTargets = 0;
+    shadowPso.DSVFormat = GetShadowDsvFormat();
+    shadowPso.SampleDesc = {1, 0};
+    dx12::ThrowIfFailed(device->CreateGraphicsPipelineState(&shadowPso, IID_PPV_ARGS(&m_shadowPSO)), "Shadow PSO");
+
     D3D12_DEPTH_STENCIL_DESC noDepth{};
     D3D12_GRAPHICS_PIPELINE_STATE_DESC litPso{};
     litPso.pRootSignature = m_rootSig.Get();
@@ -388,6 +455,34 @@ bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
     waterPso.NumRenderTargets = 1; waterPso.RTVFormats[0] = backBufferFmt;
     waterPso.DSVFormat = m_gBuffer->GetDepthStencilFormat(); waterPso.SampleDesc = {1, 0};
     dx12::ThrowIfFailed(device->CreateGraphicsPipelineState(&waterPso, IID_PPV_ARGS(&m_waterPSO)), "Water PSO");
+    return true;
+}
+
+bool DeferredScene::BuildLightingSrvHeap(ID3D12Device* device)
+{
+    if (!m_gBuffer)
+        return false;
+
+    m_lightingSrvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = GBuffer::SrvCount + 1u;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    dx12::ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_lightingSrvHeap)), "Deferred lighting SRV heap");
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dst = m_lightingSrvHeap->GetCPUDescriptorHandleForHeapStart();
+    device->CopyDescriptorsSimple(
+        GBuffer::SrvCount,
+        dst,
+        m_gBuffer->GetSrvCpuTable(),
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    dst.ptr += static_cast<SIZE_T>(GBuffer::SrvCount) * m_lightingSrvStride;
+    CreateShadowSrv(device, dst);
+
+    m_shadowMapSrvGpu = m_lightingSrvHeap->GetGPUDescriptorHandleForHeapStart();
+    m_shadowMapSrvGpu.ptr += static_cast<UINT64>(GBuffer::SrvCount) * m_lightingSrvStride;
     return true;
 }
 
@@ -527,18 +622,63 @@ bool DeferredScene::BuildConstantBuffers(ID3D12Device* device)
         && mkCB(sizeof(LightConstants), m_lightCB, m_mappedLightCB);
 }
 
+void DeferredScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList)
+{
+    RecordShadowPass(
+        cmdList,
+        [&]() {
+            cmdList->SetGraphicsRootSignature(m_shadowRootSig.Get());
+            cmdList->SetGraphicsRootConstantBufferView(0, m_passCB->GetGPUVirtualAddress());
+            cmdList->SetPipelineState(m_shadowPSO.Get());
+            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        },
+        [&](uint32_t cascade) {
+            DrawSceneGeometryDepthOnly(cmdList, cascade);
+        });
+}
+
+void DeferredScene::DrawSceneGeometryDepthOnly(ID3D12GraphicsCommandList* cmdList, uint32_t cascadeIndex)
+{
+    cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascadeIndex, 0);
+    cmdList->IASetVertexBuffers(0, 1, &m_vbv);
+    cmdList->IASetIndexBuffer(&m_ibv);
+
+    for (const DrawItem& item : m_drawItems)
+        cmdList->DrawIndexedInstanced(item.IndexCount, 1, item.StartIndexLocation, 0, 0);
+}
+
 void DeferredScene::UpdatePassConstants(uint32_t width, uint32_t height)
 {
     if (!m_mappedPassCB) return;
 
-    XMMATRIX vp = XMLoadFloat4x4(&m_view) * XMLoadFloat4x4(&m_proj);
+    const XMMATRIX view = XMLoadFloat4x4(&m_view);
+    XMMATRIX vp = view * XMLoadFloat4x4(&m_proj);
     XMMATRIX ivp = XMMatrixInverse(nullptr, vp);
     const XMMATRIX world = BuildSceneWorldMatrix(m_options);
 
+    XMFLOAT4 lightDirection{0.4f, -1.f, 0.3f, 0.f};
+    for (const SceneLight& light : m_options.Lights)
+    {
+        if (light.LightType != SceneLight::Type::Directional)
+            continue;
+        const XMFLOAT3 dir = NormalizeOrFallback(light.Direction, XMFLOAT3{0.f, -1.f, 0.f});
+        lightDirection = {dir.x, dir.y, dir.z, 0.f};
+        break;
+    }
+    UpdateShadows(m_view, m_proj, lightDirection);
+
     PassConstants cb{};
     XMStoreFloat4x4(&cb.World, XMMatrixTranspose(world));
+    XMStoreFloat4x4(&cb.View, XMMatrixTranspose(view));
     XMStoreFloat4x4(&cb.ViewProj, XMMatrixTranspose(vp));
     XMStoreFloat4x4(&cb.InvViewProj, XMMatrixTranspose(ivp));
+    const ShadowConstants& shadowConstants = GetShadowConstants();
+    for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade)
+        XMStoreFloat4x4(
+            &cb.LightViewProj[cascade],
+            XMMatrixTranspose(XMLoadFloat4x4(&shadowConstants.LightViewProj[cascade])));
+    cb.CascadeFar = shadowConstants.CascadeFar;
+    cb.ShadowParams = shadowConstants.ShadowParams;
     cb.EyePosW = {m_eye.x, m_eye.y, m_eye.z, 1.f};
     cb.RenderTargetSize = {(float)width, (float)height, 1.f / width, 1.f / height};
     cb.TessParams = BuildTessellationParams(m_options.UseTessellation);

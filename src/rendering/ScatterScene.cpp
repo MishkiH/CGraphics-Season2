@@ -11,6 +11,7 @@ using namespace DirectX;
 namespace
 {
     constexpr float kMotionSpeed = 1.5f;
+    const XMFLOAT4 kScatterLightDirection{-0.5f, -1.f, -0.4f, 0.f};
 
     float SampleAnimationTime(float animationTime, float distanceSq)
     {
@@ -55,6 +56,8 @@ bool ScatterScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue
     if (!BuildRootSignature(device)) return false;
     if (!BuildPSO(device, backBufferFmt)) return false;
     if (!BuildMeshGpu(device, cmdQueue)) return false;
+    if (!InitializeShadows(device)) return false;
+    BuildShadowDescriptors(device);
     if (!BuildDepthBuffer(device, width, height)) return false;
     if (!BuildSceneCB(device)) return false;
     return true;
@@ -63,6 +66,7 @@ bool ScatterScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueue
 void ScatterScene::Shutdown()
 {
     if (m_mappedSceneCB) { m_sceneCB->Unmap(0, nullptr); m_mappedSceneCB = nullptr; }
+    ShutdownShadows();
 }
 
 void ScatterScene::OnResize(ID3D12Device* device, uint32_t width, uint32_t height)
@@ -72,14 +76,18 @@ void ScatterScene::OnResize(ID3D12Device* device, uint32_t width, uint32_t heigh
 }
 
 void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
-                                   const XMFLOAT4X4& viewProj, const XMFLOAT3& eyePos,
+                                   const XMFLOAT4X4& view, const XMFLOAT4X4& proj,
+                                   const XMFLOAT3& eyePos,
                                    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
                                    D3D12_VIEWPORT viewport, D3D12_RECT scissorRect,
                                    float dt)
 {
     m_animationTime += dt;
-    UpdateSceneConstants(viewProj, eyePos);
+    UpdateSceneConstants(view, proj, eyePos);
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&view) * XMLoadFloat4x4(&proj));
     GatherVisibleInstances(viewProj);
+    RenderShadowMaps(cmdList, eyePos);
 
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
     cmdList->OMSetRenderTargets(1, &backBufferRtv, FALSE, &dsv);
@@ -93,9 +101,19 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     DrawVisibleInstances(cmdList, eyePos);
 }
 
-void ScatterScene::UpdateSceneConstants(const XMFLOAT4X4& viewProj, const XMFLOAT3& eyePos)
+void ScatterScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X4& proj, const XMFLOAT3& eyePos)
 {
-    const SceneCBData cbData{viewProj, {eyePos.x, eyePos.y, eyePos.z, 1.f}};
+    UpdateShadows(view, proj, kScatterLightDirection);
+
+    SceneCBData cbData{};
+    XMStoreFloat4x4(&cbData.ViewProj, XMLoadFloat4x4(&view) * XMLoadFloat4x4(&proj));
+    cbData.View = view;
+    const ShadowConstants& shadowConstants = GetShadowConstants();
+    for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade)
+        cbData.LightViewProj[cascade] = shadowConstants.LightViewProj[cascade];
+    cbData.CascadeFar = shadowConstants.CascadeFar;
+    cbData.ShadowParams = shadowConstants.ShadowParams;
+    cbData.EyePos = {eyePos.x, eyePos.y, eyePos.z, 1.f};
     std::memcpy(m_mappedSceneCB, &cbData, sizeof(cbData));
 }
 
@@ -129,6 +147,7 @@ void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, cons
         const MeshData& mesh = m_scene.GetMesh(meshIndex);
         ID3D12DescriptorHeap* heaps[] = {gpu.SrvHeap.Get()};
         cmdList->SetDescriptorHeaps(1, heaps);
+        cmdList->SetGraphicsRootDescriptorTable(3, gpu.ShadowSrvGpu);
         cmdList->IASetVertexBuffers(0, 1, &gpu.VBV);
         cmdList->IASetIndexBuffer(&gpu.IBV);
 
@@ -149,6 +168,49 @@ void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, cons
     }
 }
 
+void ScatterScene::DrawShadowCasters(ID3D12GraphicsCommandList* cmdList, const XMFLOAT3& eyePos, uint32_t cascadeIndex)
+{
+    const auto& instances = m_scene.GetInstances();
+
+    for (uint32_t meshIndex = 0; meshIndex < SceneObjectManager::MeshCount; ++meshIndex)
+    {
+        const std::vector<uint32_t>& visibleInstances = m_visibleByMesh[meshIndex];
+        if (visibleInstances.empty())
+            continue;
+
+        const MeshGpu& gpu = m_meshes[meshIndex];
+        const MeshData& mesh = m_scene.GetMesh(meshIndex);
+        cmdList->IASetVertexBuffers(0, 1, &gpu.VBV);
+        cmdList->IASetIndexBuffer(&gpu.IBV);
+
+        for (uint32_t instanceIndex : visibleInstances)
+        {
+            const SceneInstance& instance = instances[instanceIndex];
+            const XMFLOAT4X4 animatedWorld = BuildAnimatedWorld(instance, instanceIndex, eyePos, m_animationTime);
+            cmdList->SetGraphicsRoot32BitConstants(1, 16, &animatedWorld, 0);
+            cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascadeIndex, 16);
+
+            for (const SubMesh& subMesh : mesh.SubMeshes)
+                cmdList->DrawIndexedInstanced(subMesh.IndexCount, 1, subMesh.IndexStart, 0, 0);
+        }
+    }
+}
+
+void ScatterScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList, const XMFLOAT3& eyePos)
+{
+    RecordShadowPass(
+        cmdList,
+        [&]() {
+            cmdList->SetGraphicsRootSignature(m_rootSig.Get());
+            cmdList->SetGraphicsRootConstantBufferView(0, m_sceneCB->GetGPUVirtualAddress());
+            cmdList->SetPipelineState(m_shadowPso.Get());
+            cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        },
+        [&](uint32_t cascade) {
+            DrawShadowCasters(cmdList, eyePos, cascade);
+        });
+}
+
 bool ScatterScene::BuildShaders(ID3D12Device*)
 {
     UINT flags = 0;
@@ -160,11 +222,13 @@ bool ScatterScene::BuildShaders(ID3D12Device*)
 
     auto compile = [&](const char* entry, const char* target, ComPtr<ID3DBlob>& blob) -> bool {
         errors.Reset();
-        HRESULT hr = D3DCompileFromFile(path.c_str(), nullptr, nullptr, entry, target, flags, 0, &blob, &errors);
+        HRESULT hr = D3DCompileFromFile(path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, entry, target, flags, 0, &blob, &errors);
         if (FAILED(hr)) { if (errors) throw std::runtime_error((const char*)errors->GetBufferPointer()); return false; }
         return true;
     };
-    return compile("VS", "vs_5_0", m_vs) && compile("PS", "ps_5_0", m_ps);
+    return compile("VS", "vs_5_0", m_vs)
+        && compile("PS", "ps_5_0", m_ps)
+        && compile("ShadowVS", "vs_5_0", m_shadowVs);
 }
 
 bool ScatterScene::BuildRootSignature(ID3D12Device* device)
@@ -176,7 +240,14 @@ bool ScatterScene::BuildRootSignature(ID3D12Device* device)
     texRange.RegisterSpace = 0;
     texRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[3]{};
+    D3D12_DESCRIPTOR_RANGE shadowRange{};
+    shadowRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shadowRange.NumDescriptors = 1;
+    shadowRange.BaseShaderRegister = 1;
+    shadowRange.RegisterSpace = 0;
+    shadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[4]{};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[0].Descriptor.ShaderRegister = 0;
     params[0].Descriptor.RegisterSpace = 0;
@@ -185,7 +256,7 @@ bool ScatterScene::BuildRootSignature(ID3D12Device* device)
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[1].Constants.ShaderRegister = 1;
     params[1].Constants.RegisterSpace = 0;
-    params[1].Constants.Num32BitValues = 16;
+    params[1].Constants.Num32BitValues = 17;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -193,15 +264,30 @@ bool ScatterScene::BuildRootSignature(ID3D12Device* device)
     params[2].DescriptorTable.pDescriptorRanges = &texRange;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC sampler{};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxAnisotropy = 1; sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX; sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[3].DescriptorTable.NumDescriptorRanges = 1;
+    params[3].DescriptorTable.pDescriptorRanges = &shadowRange;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC samplers[2]{};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 1;
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc{};
-    desc.NumParameters = 3; desc.pParameters = params;
-    desc.NumStaticSamplers = 1; desc.pStaticSamplers = &sampler;
+    desc.NumParameters = static_cast<UINT>(_countof(params)); desc.pParameters = params;
+    desc.NumStaticSamplers = static_cast<UINT>(_countof(samplers)); desc.pStaticSamplers = samplers;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> blob, err;
@@ -236,7 +322,26 @@ bool ScatterScene::BuildPSO(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
     desc.DSVFormat = DXGI_FORMAT_D32_FLOAT; desc.SampleDesc.Count = 1;
     desc.RasterizerState = raster; desc.BlendState = blend;
     desc.DepthStencilState = depth; desc.SampleMask = UINT_MAX;
-    return SUCCEEDED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&m_pso)));
+    if (FAILED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&m_pso))))
+        return false;
+
+    D3D12_RASTERIZER_DESC shadowRaster = raster;
+    shadowRaster.DepthBias = 2500;
+    shadowRaster.SlopeScaledDepthBias = 2.f;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowDesc{};
+    shadowDesc.pRootSignature = m_rootSig.Get();
+    shadowDesc.VS = {m_shadowVs->GetBufferPointer(), m_shadowVs->GetBufferSize()};
+    shadowDesc.InputLayout = {layout, 4};
+    shadowDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    shadowDesc.NumRenderTargets = 0;
+    shadowDesc.DSVFormat = GetShadowDsvFormat();
+    shadowDesc.SampleDesc.Count = 1;
+    shadowDesc.RasterizerState = shadowRaster;
+    shadowDesc.BlendState = blend;
+    shadowDesc.DepthStencilState = depth;
+    shadowDesc.SampleMask = UINT_MAX;
+    return SUCCEEDED(device->CreateGraphicsPipelineState(&shadowDesc, IID_PPV_ARGS(&m_shadowPso)));
 }
 
 bool ScatterScene::BuildMeshGpu(ID3D12Device* device, ID3D12CommandQueue* cmdQueue)
@@ -271,10 +376,11 @@ void ScatterScene::UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* c
     uint32_t texCount = (uint32_t)mesh.DiffusePaths.size();
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.NumDescriptors = texCount;
+    hd.NumDescriptors = texCount + 1u;
     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     dx12::ThrowIfFailed(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&gpu.SrvHeap)), "scatter SRV heap");
     gpu.SrvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    gpu.ShadowSrvIndex = texCount;
     gpu.Textures.resize(texCount);
 
     auto uploadTex = [&](uint32_t slot, const Image& img) {
@@ -304,6 +410,19 @@ void ScatterScene::UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* c
     {
         device->CreateShaderResourceView(gpu.Textures[i].Get(), &sd, h);
         h.ptr += gpu.SrvStride;
+    }
+}
+
+void ScatterScene::BuildShadowDescriptors(ID3D12Device* device)
+{
+    for (MeshGpu& gpu : m_meshes)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = gpu.SrvHeap->GetCPUDescriptorHandleForHeapStart();
+        cpuHandle.ptr += static_cast<SIZE_T>(gpu.ShadowSrvIndex) * gpu.SrvStride;
+        CreateShadowSrv(device, cpuHandle);
+
+        gpu.ShadowSrvGpu = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
+        gpu.ShadowSrvGpu.ptr += static_cast<UINT64>(gpu.ShadowSrvIndex) * gpu.SrvStride;
     }
 }
 

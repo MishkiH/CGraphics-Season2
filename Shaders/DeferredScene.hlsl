@@ -1,8 +1,12 @@
 cbuffer PassCB : register(b0)
 {
     float4x4 gWorld;
+    float4x4 gView;
     float4x4 gViewProj;
     float4x4 gInvViewProj;
+    float4x4 gLightViewProj[4];
+    float4 gCascadeFar;
+    float4 gShadowParams;
     float4 gEyePosW;
     float4 gRTSize;
     float4 gTessParams;
@@ -20,6 +24,15 @@ Texture2D gDiffuseMap : register(t0);
 Texture2D gNormalMap : register(t1);
 Texture2D gDisplacementMap : register(t2);
 SamplerState gSampler : register(s0);
+Texture2DArray gShadowMaps : register(t6);
+SamplerComparisonState gShadowSampler : register(s1);
+
+cbuffer ShadowDrawCB : register(b3)
+{
+    uint gShadowCascadeIndex;
+};
+
+#include "ShadowCommon.hlsl"
 
 struct VSIn
 {
@@ -73,6 +86,12 @@ GeometryPixelIn GeometryFlatVS(VSIn vin)
     vout.TangentW = mul(vin.TangentL, w3);
     vout.TexC = vin.TexC;
     return vout;
+}
+
+float4 ShadowVS(VSIn vin) : SV_POSITION
+{
+    float4 posW = mul(float4(vin.PosL, 1.0), gWorld);
+    return mul(posW, gLightViewProj[gShadowCascadeIndex]);
 }
 
 struct HsConstData
@@ -274,6 +293,8 @@ float4 LightingPS(QuadVSOut pin) : SV_TARGET
         if (type < 0.5)
         {
             L = normalize(-light.DirectionSpot.xyz);
+            float3 posV = mul(float4(posW, 1.0), gView).xyz;
+            attenuation = SampleCsmShadowPcf(posW, max(posV.z, 0.0), N, L);
         }
         else if (type < 1.5)
         {

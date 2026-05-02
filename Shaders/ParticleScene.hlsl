@@ -1,6 +1,10 @@
 cbuffer SceneCB : register(b0)
 {
     row_major float4x4 gViewProj;
+    row_major float4x4 gView;
+    row_major float4x4 gLightViewProj[4];
+    float4 gCascadeFar;
+    float4 gShadowParams;
     float4 gCameraRight;
     float4 gCameraUp;
     float4 gCameraFacing;
@@ -15,8 +19,14 @@ cbuffer DrawCB : register(b1)
     float4 gBaseColor;
     float gCheckerTileSize;
     float gIsFloor;
-    float2 gDrawPadding;
+    float gShadowCascadeIndex;
+    float gDrawPadding;
 };
+
+Texture2DArray gShadowMaps : register(t2);
+SamplerComparisonState gShadowSampler : register(s0);
+
+#include "ShadowCommon.hlsl"
 
 cbuffer UpdateCB : register(b2)
 {
@@ -47,6 +57,7 @@ struct MeshVSOut
 {
     float4 PosH    : SV_POSITION;
     float3 PosW    : TEXCOORD0;
+    float3 PosV    : TEXCOORD1;
     float3 NormalW : NORMAL;
 };
 
@@ -56,8 +67,16 @@ MeshVSOut MeshVS(MeshVSIn vin)
     float4 posW = mul(float4(vin.Pos, 1.0), gWorld);
     vout.PosH = mul(posW, gViewProj);
     vout.PosW = posW.xyz;
+    vout.PosV = mul(posW, gView).xyz;
     vout.NormalW = normalize(mul(vin.Normal, (float3x3)gWorld));
     return vout;
+}
+
+float4 ShadowVS(MeshVSIn vin) : SV_POSITION
+{
+    const uint cascadeIndex = (uint)gShadowCascadeIndex;
+    const float4 posW = mul(float4(vin.Pos, 1.0), gWorld);
+    return mul(posW, gLightViewProj[cascadeIndex]);
 }
 
 float4 MeshPS(MeshVSOut pin) : SV_Target
@@ -66,6 +85,7 @@ float4 MeshPS(MeshVSOut pin) : SV_Target
     const float3 L = normalize(-gLightDirection.xyz);
     const float diffuse = saturate(dot(N, L));
     const float skyBounce = saturate(N.y * 0.5 + 0.5);
+    const float shadow = SampleCsmShadowPcf(pin.PosW, max(pin.PosV.z, 0.0), N, L);
 
     float3 baseColor = gBaseColor.rgb;
     if (gIsFloor > 0.5)
@@ -77,7 +97,8 @@ float4 MeshPS(MeshVSOut pin) : SV_Target
         baseColor = isEvenTile ? darkLettuce : darkBrown;
     }
 
-    float3 litColor = baseColor * (gAmbientColor.rgb + gLightColor.rgb * diffuse);
+    float3 litColor = baseColor * gAmbientColor.rgb;
+    litColor += baseColor * gLightColor.rgb * diffuse * shadow;
     litColor += baseColor * (0.08 * skyBounce);
     return float4(saturate(litColor), 1.0);
 }

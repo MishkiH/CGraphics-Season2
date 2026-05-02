@@ -142,9 +142,7 @@ void RenderingSystem::Draw(float dt)
         const float clearColor[4] = {0.08f, 0.10f, 0.13f, 1.f};
         m_cmdList->ClearRenderTargetView(CurrentBackBufferRTV(), clearColor, 0, nullptr);
 
-        XMFLOAT4X4 viewProj;
-        XMStoreFloat4x4(&viewProj, XMLoadFloat4x4(&m_view) * XMLoadFloat4x4(&m_proj));
-        m_scatterScene->RecordCommands(m_cmdList.Get(), viewProj, m_eye,
+        m_scatterScene->RecordCommands(m_cmdList.Get(), m_view, m_proj, m_eye,
                                         CurrentBackBufferRTV(), m_viewport, m_scissorRect, dt);
     }
     else if (m_sceneMode == ParticleSceneMode && m_particleScene)

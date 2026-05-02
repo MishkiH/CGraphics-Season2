@@ -13,7 +13,9 @@
 #include <cstdint>
 #include <vector>
 
-class ParticleScene
+#include "ShadowedScene.h"
+
+class ParticleScene : private ShadowedScene
 {
 public:
     static constexpr uint32_t MaxParticles = 4096;
@@ -47,6 +49,10 @@ private:
     struct alignas(256) SceneConstants
     {
         DirectX::XMFLOAT4X4 ViewProj{};
+        DirectX::XMFLOAT4X4 View{};
+        DirectX::XMFLOAT4X4 LightViewProj[ShadowCascadeCount]{};
+        DirectX::XMFLOAT4 CascadeFar{};
+        DirectX::XMFLOAT4 ShadowParams{};
         DirectX::XMFLOAT4 CameraRight{};
         DirectX::XMFLOAT4 CameraUp{};
         DirectX::XMFLOAT4 CameraFacing{};
@@ -61,7 +67,8 @@ private:
         DirectX::XMFLOAT4 BaseColor{1.f, 1.f, 1.f, 1.f};
         float CheckerTileSize = 0.f;
         float IsFloor = 0.f;
-        DirectX::XMFLOAT2 Padding{0.f, 0.f};
+        float ShadowCascadeIndex = 0.f;
+        float Padding = 0.f;
     };
 
     struct alignas(16) UpdateConstants
@@ -127,7 +134,9 @@ private:
     void DrawMesh(ID3D12GraphicsCommandList* cmdList,
                   const MeshGpu& mesh,
                   const DirectX::XMFLOAT4X4& world,
-                  bool isFloor);
+                  bool isFloor,
+                  uint32_t shadowCascadeIndex = 0);
+    void RenderShadowMaps(ID3D12GraphicsCommandList* cmdList);
     void RenderScene(ID3D12GraphicsCommandList* cmdList,
                      D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,
                      D3D12_VIEWPORT viewport,
@@ -145,10 +154,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_computeRootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_meshPso;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_particlePso;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_shadowPso;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_updatePso;
 
     Microsoft::WRL::ComPtr<ID3DBlob> m_meshVs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_meshPs;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_shadowVs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_particleVs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_particleGs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_particlePs;
@@ -158,6 +169,7 @@ private:
     BufferWithCounter m_particleBuffers[2];
     Microsoft::WRL::ComPtr<ID3D12Resource> m_liveCountBuffer;
     D3D12_GPU_DESCRIPTOR_HANDLE m_liveCountSrvGpu{};
+    D3D12_GPU_DESCRIPTOR_HANDLE m_shadowMapSrvGpu{};
     D3D12_RESOURCE_STATES m_liveCountState = D3D12_RESOURCE_STATE_COMMON;
 
     MeshGpu m_bunnyMesh;

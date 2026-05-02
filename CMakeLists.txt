@@ -15,6 +15,7 @@ add_executable(dx12_optimization
     src/rendering/ParticleScene.cpp
     src/rendering/RenderingSystem.cpp
     src/rendering/ScatterScene.cpp
+    src/rendering/ShadowMap.cpp
     src/assets/ImageLoader.cpp
     src/assets/ObjLoader.cpp
     src/scene/FrustumCuller.cpp
