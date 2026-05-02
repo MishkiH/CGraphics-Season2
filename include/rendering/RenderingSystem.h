@@ -57,6 +57,7 @@ public:
 private:
     void BeginFrame();
     void EndFrame();
+    void TransitionCurrentBackBuffer(D3D12_RESOURCE_STATES newState);
     void SyncDeferredSceneCameras();
     void UpdateProjectionMatrix();
     bool CreateDevice();
@@ -86,8 +87,9 @@ private:
     uint64_t m_fenceValue = 0;
     HANDLE m_fenceEvent = nullptr;
 
-    Microsoft::WRL::ComPtr<IDXGISwapChain> m_swapChain;
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> m_swapChain;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_backBuffers[SwapChainBufferCount];
+    D3D12_RESOURCE_STATES m_backBufferStates[SwapChainBufferCount]{};
     uint32_t m_backBufferIndex = 0;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
     uint32_t m_rtvStride = 0;

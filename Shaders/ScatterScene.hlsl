@@ -66,8 +66,8 @@ float4 PS(VSOut pin) : SV_Target
     float3 H = normalize(L + V);
 
     float diff = saturate(dot(N, L));
-    float spec = pow(saturate(dot(N, H)), 32.0) * 0.15;
+    float spec = pow(saturate(dot(N, H)), 32.0) * 0.06;
     float shadow = SampleCsmShadowPcf(pin.PosW, max(pin.PosV.z, 0.0), N, L);
 
-    return float4(albedo * (0.15 + diff * 0.85 * shadow) + spec * shadow, 1.0);
+    return float4(albedo * (0.08 + diff * 0.52 * shadow) + spec * shadow, 1.0);
 }

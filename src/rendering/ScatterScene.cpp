@@ -11,7 +11,32 @@ using namespace DirectX;
 namespace
 {
     constexpr float kMotionSpeed = 1.5f;
+    constexpr float kFloorHalfWidth = 900.f;
+    constexpr float kFloorHalfDepth = 1650.f;
     const XMFLOAT4 kScatterLightDirection{-0.5f, -1.f, -0.4f, 0.f};
+
+    XMFLOAT3 RainbowClearColor(float time)
+    {
+        const float r = 0.12f + 0.10f * std::sin(time * 0.85f + 0.0f);
+        const float g = 0.12f + 0.10f * std::sin(time * 1.05f + XM_2PI / 3.f);
+        const float b = 0.12f + 0.10f * std::sin(time * 1.25f + XM_2PI * 2.f / 3.f);
+        return {r, g, b};
+    }
+
+    MeshData BuildFloorMesh()
+    {
+        MeshData mesh;
+        mesh.Vertices = {
+            {{-kFloorHalfWidth, -0.04f, -kFloorHalfDepth}, {0.f, 1.f, 0.f}, {0.f, 1.f}, {1.f, 0.f, 0.f}},
+            {{-kFloorHalfWidth, -0.04f,  kFloorHalfDepth}, {0.f, 1.f, 0.f}, {0.f, 0.f}, {1.f, 0.f, 0.f}},
+            {{ kFloorHalfWidth, -0.04f,  kFloorHalfDepth}, {0.f, 1.f, 0.f}, {1.f, 0.f}, {1.f, 0.f, 0.f}},
+            {{ kFloorHalfWidth, -0.04f, -kFloorHalfDepth}, {0.f, 1.f, 0.f}, {1.f, 1.f}, {1.f, 0.f, 0.f}},
+        };
+        mesh.Indices = {0, 1, 2, 0, 2, 3};
+        mesh.BoundsMin = {-kFloorHalfWidth, -0.04f, -kFloorHalfDepth};
+        mesh.BoundsMax = { kFloorHalfWidth, -0.04f,  kFloorHalfDepth};
+        return mesh;
+    }
 
     float SampleAnimationTime(float animationTime, float distanceSq)
     {
@@ -91,6 +116,9 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
 
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
     cmdList->OMSetRenderTargets(1, &backBufferRtv, FALSE, &dsv);
+    const XMFLOAT3 clear = RainbowClearColor(m_animationTime);
+    const float clearColor[4] = {clear.x, clear.y, clear.z, 1.f};
+    cmdList->ClearRenderTargetView(backBufferRtv, clearColor, 0, nullptr);
     cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.f, 0, 0, nullptr);
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissorRect);
@@ -98,6 +126,7 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootSignature(m_rootSig.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->SetGraphicsRootConstantBufferView(0, m_sceneCB->GetGPUVirtualAddress());
+    DrawFloor(cmdList);
     DrawVisibleInstances(cmdList, eyePos);
 }
 
@@ -131,6 +160,24 @@ void ScatterScene::GatherVisibleInstances(const XMFLOAT4X4& viewProj)
     const auto& instances = m_scene.GetInstances();
     for (uint32_t instanceIndex : m_visibleScratch)
         m_visibleByMesh[instances[instanceIndex].MeshIndex].push_back(instanceIndex);
+}
+
+void ScatterScene::DrawFloor(ID3D12GraphicsCommandList* cmdList)
+{
+    if (!m_floorIndexCount)
+        return;
+
+    ID3D12DescriptorHeap* heaps[] = {m_floorMesh.SrvHeap.Get()};
+    cmdList->SetDescriptorHeaps(1, heaps);
+    cmdList->SetGraphicsRootDescriptorTable(3, m_floorMesh.ShadowSrvGpu);
+    cmdList->IASetVertexBuffers(0, 1, &m_floorMesh.VBV);
+    cmdList->IASetIndexBuffer(&m_floorMesh.IBV);
+
+    XMFLOAT4X4 world{};
+    XMStoreFloat4x4(&world, XMMatrixIdentity());
+    cmdList->SetGraphicsRoot32BitConstants(1, 16, &world, 0);
+    cmdList->SetGraphicsRootDescriptorTable(2, m_floorMesh.SrvHeap->GetGPUDescriptorHandleForHeapStart());
+    cmdList->DrawIndexedInstanced(m_floorIndexCount, 1, 0, 0, 0);
 }
 
 void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, const XMFLOAT3& eyePos)
@@ -354,9 +401,57 @@ bool ScatterScene::BuildMeshGpu(ID3D12Device* device, ID3D12CommandQueue* cmdQue
     std::vector<ComPtr<ID3D12Resource>> uploads;
     for (uint32_t m = 0; m < SceneObjectManager::MeshCount; ++m)
         UploadMesh(device, list.Get(), m_meshes[m], m_scene.GetMesh(m), uploads);
+    BuildFloorGpu(device, list.Get(), uploads);
 
     dx12::ExecuteAndWait(device, cmdQueue, list.Get());
     return true;
+}
+
+void ScatterScene::BuildFloorGpu(ID3D12Device* device,
+                                 ID3D12GraphicsCommandList* cmdList,
+                                 std::vector<ComPtr<ID3D12Resource>>& uploads)
+{
+    const MeshData floor = BuildFloorMesh();
+    const UINT64 vbSz = static_cast<UINT64>(floor.Vertices.size()) * sizeof(MeshVertex);
+    const UINT64 ibSz = static_cast<UINT64>(floor.Indices.size()) * sizeof(uint32_t);
+
+    ComPtr<ID3D12Resource> vbUp, ibUp;
+    m_floorMesh.VertexBuffer = dx12::CreateDefaultBuffer(device, cmdList, floor.Vertices.data(), vbSz, vbUp);
+    m_floorMesh.IndexBuffer = dx12::CreateDefaultBuffer(device, cmdList, floor.Indices.data(), ibSz, ibUp);
+    uploads.push_back(vbUp);
+    uploads.push_back(ibUp);
+
+    m_floorMesh.VBV = {m_floorMesh.VertexBuffer->GetGPUVirtualAddress(), static_cast<UINT>(vbSz), sizeof(MeshVertex)};
+    m_floorMesh.IBV = {m_floorMesh.IndexBuffer->GetGPUVirtualAddress(), static_cast<UINT>(ibSz), DXGI_FORMAT_R32_UINT};
+    m_floorIndexCount = static_cast<uint32_t>(floor.Indices.size());
+
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = 2;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    dx12::ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_floorMesh.SrvHeap)), "scatter floor SRV heap");
+    m_floorMesh.SrvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    m_floorMesh.ShadowSrvIndex = 1;
+
+    const Image neutralGray{1, 1, {120, 120, 120, 255}};
+    m_floorMesh.Textures.resize(1);
+    m_floorMesh.Textures[0] = dx12::CreateTexture2D(
+        device,
+        neutralGray.Width,
+        neutralGray.Height,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        D3D12_RESOURCE_STATE_COPY_DEST);
+    dx12::UploadTexture2D(device, cmdList, m_floorMesh.Textures[0].Get(), neutralGray, uploads);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView(
+        m_floorMesh.Textures[0].Get(),
+        &srvDesc,
+        m_floorMesh.SrvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
 void ScatterScene::UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
@@ -424,6 +519,12 @@ void ScatterScene::BuildShadowDescriptors(ID3D12Device* device)
         gpu.ShadowSrvGpu = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
         gpu.ShadowSrvGpu.ptr += static_cast<UINT64>(gpu.ShadowSrvIndex) * gpu.SrvStride;
     }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE floorShadowCpu = m_floorMesh.SrvHeap->GetCPUDescriptorHandleForHeapStart();
+    floorShadowCpu.ptr += static_cast<SIZE_T>(m_floorMesh.ShadowSrvIndex) * m_floorMesh.SrvStride;
+    CreateShadowSrv(device, floorShadowCpu);
+    m_floorMesh.ShadowSrvGpu = m_floorMesh.SrvHeap->GetGPUDescriptorHandleForHeapStart();
+    m_floorMesh.ShadowSrvGpu.ptr += static_cast<UINT64>(m_floorMesh.ShadowSrvIndex) * m_floorMesh.SrvStride;
 }
 
 bool ScatterScene::BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32_t height)

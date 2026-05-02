@@ -70,6 +70,9 @@ private:
     bool BuildRootSignature(ID3D12Device* device);
     bool BuildPSO(ID3D12Device* device, DXGI_FORMAT backBufferFmt);
     bool BuildMeshGpu(ID3D12Device* device, ID3D12CommandQueue* cmdQueue);
+    void BuildFloorGpu(ID3D12Device* device,
+                       ID3D12GraphicsCommandList* cmdList,
+                       std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploads);
     void BuildShadowDescriptors(ID3D12Device* device);
     bool BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32_t height);
     bool BuildSceneCB(ID3D12Device* device);
@@ -77,6 +80,7 @@ private:
                               const DirectX::XMFLOAT4X4& proj,
                               const DirectX::XMFLOAT3& eyePos);
     void GatherVisibleInstances(const DirectX::XMFLOAT4X4& viewProj);
+    void DrawFloor(ID3D12GraphicsCommandList* cmdList);
     void DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos);
     void DrawShadowCasters(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos, uint32_t cascadeIndex);
     void RenderShadowMaps(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos);
@@ -93,6 +97,8 @@ private:
     Microsoft::WRL::ComPtr<ID3DBlob> m_ps;
     Microsoft::WRL::ComPtr<ID3DBlob> m_shadowVs;
     MeshGpu m_meshes[SceneObjectManager::MeshCount];
+    MeshGpu m_floorMesh;
+    uint32_t m_floorIndexCount = 0;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_sceneCB;
     uint8_t* m_mappedSceneCB = nullptr;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_depthBuffer;

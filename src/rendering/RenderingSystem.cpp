@@ -19,6 +19,55 @@ using Microsoft::WRL::ComPtr;
 namespace
 {
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    constexpr D3D_FEATURE_LEVEL kMinFeatureLevel = D3D_FEATURE_LEVEL_12_0;
+
+    bool IsHardwareAdapter(IDXGIAdapter1* adapter)
+    {
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc)))
+            return false;
+
+        return (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0;
+    }
+
+    bool SupportsD3D12(IDXGIAdapter1* adapter)
+    {
+        return SUCCEEDED(D3D12CreateDevice(adapter, kMinFeatureLevel, __uuidof(ID3D12Device), nullptr));
+    }
+
+    ComPtr<IDXGIAdapter1> PickHighPerformanceAdapter(IDXGIFactory4* factory)
+    {
+        ComPtr<IDXGIFactory6> factory6;
+        if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(&factory6))))
+        {
+            for (UINT i = 0;; ++i)
+            {
+                ComPtr<IDXGIAdapter1> adapter;
+                const HRESULT hr = factory6->EnumAdapterByGpuPreference(
+                    i,
+                    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                    IID_PPV_ARGS(&adapter));
+                if (hr == DXGI_ERROR_NOT_FOUND)
+                    break;
+
+                if (SUCCEEDED(hr) && IsHardwareAdapter(adapter.Get()) && SupportsD3D12(adapter.Get()))
+                    return adapter;
+            }
+        }
+
+        for (UINT i = 0;; ++i)
+        {
+            ComPtr<IDXGIAdapter1> adapter;
+            const HRESULT hr = factory->EnumAdapters1(i, adapter.GetAddressOf());
+            if (hr == DXGI_ERROR_NOT_FOUND)
+                break;
+
+            if (SUCCEEDED(hr) && IsHardwareAdapter(adapter.Get()) && SupportsD3D12(adapter.Get()))
+                return adapter;
+        }
+
+        return {};
+    }
 
     int BuildRenderMode(bool useNormalMapping, bool useDisplacement)
     {
@@ -124,6 +173,7 @@ void RenderingSystem::Shutdown()
     m_swapChain.Reset();
     m_rtvHeap.Reset();
     for (auto& buffer : m_backBuffers) buffer.Reset();
+    for (auto& state : m_backBufferStates) state = D3D12_RESOURCE_STATE_COMMON;
     m_device.Reset();
     m_factory.Reset();
     m_initialized = false;
@@ -139,9 +189,6 @@ void RenderingSystem::Draw(float dt)
 
     if (m_sceneMode == ScatterSceneMode && m_scatterScene)
     {
-        const float clearColor[4] = {0.08f, 0.10f, 0.13f, 1.f};
-        m_cmdList->ClearRenderTargetView(CurrentBackBufferRTV(), clearColor, 0, nullptr);
-
         m_scatterScene->RecordCommands(m_cmdList.Get(), m_view, m_proj, m_eye,
                                         CurrentBackBufferRTV(), m_viewport, m_scissorRect, dt);
     }
@@ -286,34 +333,39 @@ void RenderingSystem::UpdateProjectionMatrix()
 
 void RenderingSystem::BeginFrame()
 {
+    m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     dx12::ThrowIfFailed(m_cmdAlloc->Reset(), "Reset allocator");
     dx12::ThrowIfFailed(m_cmdList->Reset(m_cmdAlloc.Get(), nullptr), "Reset list");
 
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = CurrentBackBuffer().Get();
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_cmdList->ResourceBarrier(1, &b);
+    TransitionCurrentBackBuffer(D3D12_RESOURCE_STATE_RENDER_TARGET);
 }
 
 void RenderingSystem::EndFrame()
 {
-    D3D12_RESOURCE_BARRIER b{};
-    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    b.Transition.pResource = CurrentBackBuffer().Get();
-    b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    b.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_cmdList->ResourceBarrier(1, &b);
+    TransitionCurrentBackBuffer(D3D12_RESOURCE_STATE_PRESENT);
 
     dx12::ThrowIfFailed(m_cmdList->Close(), "Close command list");
     ID3D12CommandList* lists[] = {m_cmdList.Get()};
     m_cmdQueue->ExecuteCommandLists(1, lists);
     dx12::ThrowIfFailed(m_swapChain->Present(0, 0), "Present");
-    m_backBufferIndex = (m_backBufferIndex + 1) % SwapChainBufferCount;
+    m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     FlushGpu();
+}
+
+void RenderingSystem::TransitionCurrentBackBuffer(D3D12_RESOURCE_STATES newState)
+{
+    D3D12_RESOURCE_STATES& currentState = m_backBufferStates[m_backBufferIndex];
+    if (currentState == newState)
+        return;
+
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = CurrentBackBuffer().Get();
+    barrier.Transition.StateBefore = currentState;
+    barrier.Transition.StateAfter = newState;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    m_cmdList->ResourceBarrier(1, &barrier);
+    currentState = newState;
 }
 
 void RenderingSystem::FlushGpu()
@@ -329,12 +381,15 @@ void RenderingSystem::FlushGpu()
 
 bool RenderingSystem::CreateDevice()
 {
-    HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device));
+    ComPtr<IDXGIAdapter1> adapter = PickHighPerformanceAdapter(m_factory.Get());
+    HRESULT hr = adapter
+        ? D3D12CreateDevice(adapter.Get(), kMinFeatureLevel, IID_PPV_ARGS(&m_device))
+        : D3D12CreateDevice(nullptr, kMinFeatureLevel, IID_PPV_ARGS(&m_device));
     if (FAILED(hr))
     {
         ComPtr<IDXGIAdapter> warp;
         dx12::ThrowIfFailed(m_factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)), "EnumWarpAdapter");
-        dx12::ThrowIfFailed(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&m_device)), "D3D12CreateDevice (WARP)");
+        dx12::ThrowIfFailed(D3D12CreateDevice(warp.Get(), kMinFeatureLevel, IID_PPV_ARGS(&m_device)), "D3D12CreateDevice (WARP)");
     }
     D3D12_COMMAND_QUEUE_DESC qd{D3D12_COMMAND_LIST_TYPE_DIRECT};
     dx12::ThrowIfFailed(m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_cmdQueue)), "CreateCommandQueue");
@@ -346,14 +401,30 @@ bool RenderingSystem::CreateDevice()
 
 bool RenderingSystem::CreateSwapChain()
 {
-    DXGI_SWAP_CHAIN_DESC sd{};
-    sd.BufferCount = SwapChainBufferCount;
-    sd.BufferDesc.Width = m_width; sd.BufferDesc.Height = m_height;
-    sd.BufferDesc.Format = kBackBufferFormat; sd.BufferDesc.RefreshRate = {60, 1};
-    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    sd.OutputWindow = m_hwnd; sd.SampleDesc = {1, 0};
-    sd.Windowed = TRUE; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    dx12::ThrowIfFailed(m_factory->CreateSwapChain(m_cmdQueue.Get(), &sd, m_swapChain.GetAddressOf()), "CreateSwapChain");
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc.Width = m_width;
+    desc.Height = m_height;
+    desc.Format = kBackBufferFormat;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = SwapChainBufferCount;
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+
+    ComPtr<IDXGISwapChain1> swapChain;
+    dx12::ThrowIfFailed(
+        m_factory->CreateSwapChainForHwnd(
+            m_cmdQueue.Get(),
+            m_hwnd,
+            &desc,
+            nullptr,
+            nullptr,
+            swapChain.GetAddressOf()),
+        "CreateSwapChainForHwnd");
+    dx12::ThrowIfFailed(m_factory->MakeWindowAssociation(m_hwnd, DXGI_MWA_NO_ALT_ENTER), "MakeWindowAssociation");
+    dx12::ThrowIfFailed(swapChain.As(&m_swapChain), "Query IDXGISwapChain3");
+    m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     return true;
 }
 
@@ -373,7 +444,9 @@ bool RenderingSystem::CreateBackBufferRTVs()
         dx12::ThrowIfFailed(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])), "GetBuffer");
         m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, h);
         h.ptr += m_rtvStride;
+        m_backBufferStates[i] = D3D12_RESOURCE_STATE_PRESENT;
     }
+    m_backBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
     return true;
 }
 
