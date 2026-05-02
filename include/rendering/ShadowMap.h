@@ -10,7 +10,7 @@
 #include <cstdint>
 
 // shared DX12 resource and math for cascaded shadow maps
-// scenes draw their own shadow casters becaus different root signatures
+// scenes draw their own shadow casters because they use different root signatures
 class CascadedShadowMap
 {
 public:

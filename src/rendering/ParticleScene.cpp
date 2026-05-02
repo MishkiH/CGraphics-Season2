@@ -80,85 +80,30 @@ namespace
         return desc;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE OffsetCpuHandle(
-        D3D12_CPU_DESCRIPTOR_HANDLE base,
-        uint32_t stride,
-        uint32_t index)
-    {
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = base;
-        handle.ptr += static_cast<SIZE_T>(stride) * index;
-        return handle;
-    }
-
-    D3D12_GPU_DESCRIPTOR_HANDLE OffsetGpuHandle(
-        D3D12_GPU_DESCRIPTOR_HANDLE base,
-        uint32_t stride,
-        uint32_t index)
-    {
-        D3D12_GPU_DESCRIPTOR_HANDLE handle = base;
-        handle.ptr += static_cast<UINT64>(stride) * index;
-        return handle;
-    }
-
-    void TransitionResource(
-        ID3D12GraphicsCommandList* cmdList,
-        ID3D12Resource* resource,
-        D3D12_RESOURCE_STATES& currentState,
-        D3D12_RESOURCE_STATES newState)
-    {
-        if (!resource || currentState == newState)
-            return;
-
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = resource;
-        barrier.Transition.StateBefore = currentState;
-        barrier.Transition.StateAfter = newState;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &barrier);
-        currentState = newState;
-    }
-
-    void UavBarrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource)
-    {
-        if (!resource)
-            return;
-
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        barrier.UAV.pResource = resource;
-        cmdList->ResourceBarrier(1, &barrier);
-    }
-
     float ClampDeltaTime(float dt)
     {
         return std::clamp(dt, 0.f, kMaxDeltaTime);
     }
 
-    bool CreateRootSignature(
-        ID3D12Device* device,
-        const D3D12_ROOT_SIGNATURE_DESC& desc,
-        ComPtr<ID3D12RootSignature>& rootSignature)
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC MeshPipelineDesc(
+        ID3D12RootSignature* rootSignature,
+        const D3D12_BLEND_DESC& blend,
+        const D3D12_DEPTH_STENCIL_DESC& depth,
+        const D3D12_RASTERIZER_DESC& raster,
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE topology,
+        DXGI_FORMAT dsvFormat)
     {
-        ComPtr<ID3DBlob> blob;
-        ComPtr<ID3DBlob> errors;
-        HRESULT hr = D3D12SerializeRootSignature(
-            &desc,
-            D3D_ROOT_SIGNATURE_VERSION_1,
-            blob.GetAddressOf(),
-            errors.GetAddressOf());
-        if (FAILED(hr))
-        {
-            if (errors)
-                throw std::runtime_error(static_cast<const char*>(errors->GetBufferPointer()));
-            return false;
-        }
-
-        return SUCCEEDED(device->CreateRootSignature(
-            0,
-            blob->GetBufferPointer(),
-            blob->GetBufferSize(),
-            IID_PPV_ARGS(&rootSignature)));
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+        desc.pRootSignature = rootSignature;
+        desc.InputLayout = {kMeshLayout, static_cast<UINT>(_countof(kMeshLayout))};
+        desc.BlendState = blend;
+        desc.SampleMask = UINT_MAX;
+        desc.RasterizerState = raster;
+        desc.DepthStencilState = depth;
+        desc.PrimitiveTopologyType = topology;
+        desc.DSVFormat = dsvFormat;
+        desc.SampleDesc.Count = 1;
+        return desc;
     }
 
     MeshData BuildFloorMesh()
@@ -226,14 +171,9 @@ bool ParticleScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueu
     if (!BuildPipelineStates(device, backBufferFmt)) return false;
     if (!BuildDepthBuffer(device, width, height)) return false;
     if (!InitializeShadows(device)) return false;
-    CreateShadowSrv(
+    m_shadowMapSrvGpu = CreateShadowSrvInHeap(
         device,
-        OffsetCpuHandle(
-            m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-            m_descriptorStride,
-            DescriptorShadowMapSrv));
-    m_shadowMapSrvGpu = OffsetGpuHandle(
-        m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+        m_descriptorHeap.Get(),
         m_descriptorStride,
         DescriptorShadowMapSrv);
 
@@ -429,13 +369,13 @@ bool ParticleScene::BuildParticleBuffers(ID3D12Device* device, ID3D12GraphicsCom
             return false;
         }
 
-        buffer.SrvGpu = OffsetGpuHandle(gpuBase, m_descriptorStride, srvIndex);
-        buffer.UavGpu = OffsetGpuHandle(gpuBase, m_descriptorStride, uavIndex);
+        buffer.SrvGpu = dx12::OffsetGpuHandle(gpuBase, m_descriptorStride, srvIndex);
+        buffer.UavGpu = dx12::OffsetGpuHandle(gpuBase, m_descriptorStride, uavIndex);
         buffer.BufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         buffer.CounterState = D3D12_RESOURCE_STATE_COPY_DEST;
 
-        const D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = OffsetCpuHandle(cpuBase, m_descriptorStride, srvIndex);
-        const D3D12_CPU_DESCRIPTOR_HANDLE uavCpu = OffsetCpuHandle(cpuBase, m_descriptorStride, uavIndex);
+        const D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = dx12::OffsetCpuHandle(cpuBase, m_descriptorStride, srvIndex);
+        const D3D12_CPU_DESCRIPTOR_HANDLE uavCpu = dx12::OffsetCpuHandle(cpuBase, m_descriptorStride, uavIndex);
         device->CreateShaderResourceView(buffer.Buffer.Get(), &particleSrv, srvCpu);
         device->CreateUnorderedAccessView(buffer.Buffer.Get(), buffer.Counter.Get(), &particleUav, uavCpu);
 
@@ -460,7 +400,7 @@ bool ParticleScene::BuildParticleBuffers(ID3D12Device* device, ID3D12GraphicsCom
         return false;
     }
     m_liveCountState = D3D12_RESOURCE_STATE_COPY_DEST;
-    m_liveCountSrvGpu = OffsetGpuHandle(gpuBase, m_descriptorStride, DescriptorLiveCountSrv);
+    m_liveCountSrvGpu = dx12::OffsetGpuHandle(gpuBase, m_descriptorStride, DescriptorLiveCountSrv);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC countSrv{};
     countSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -469,11 +409,11 @@ bool ParticleScene::BuildParticleBuffers(ID3D12Device* device, ID3D12GraphicsCom
     countSrv.Buffer.NumElements = 1;
     countSrv.Buffer.StructureByteStride = sizeof(uint32_t);
     const D3D12_CPU_DESCRIPTOR_HANDLE liveCountSrvCpu =
-        OffsetCpuHandle(cpuBase, m_descriptorStride, DescriptorLiveCountSrv);
+        dx12::OffsetCpuHandle(cpuBase, m_descriptorStride, DescriptorLiveCountSrv);
     device->CreateShaderResourceView(m_liveCountBuffer.Get(), &countSrv, liveCountSrvCpu);
 
     uploadList->CopyBufferRegion(m_liveCountBuffer.Get(), 0, m_zeroUpload.Get(), 0, sizeof(uint32_t));
-    TransitionResource(
+    dx12::TransitionResource(
         uploadList,
         m_liveCountBuffer.Get(),
         m_liveCountState,
@@ -565,61 +505,18 @@ bool ParticleScene::BuildConstantBuffer(ID3D12Device* device)
 
 bool ParticleScene::BuildRootSignatures(ID3D12Device* device)
 {
-    D3D12_DESCRIPTOR_RANGE particleRange{};
-    particleRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    particleRange.NumDescriptors = 1;
-    particleRange.BaseShaderRegister = 0;
-    particleRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_DESCRIPTOR_RANGE countRange{};
-    countRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    countRange.NumDescriptors = 1;
-    countRange.BaseShaderRegister = 1;
-    countRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_DESCRIPTOR_RANGE shadowRange{};
-    shadowRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowRange.NumDescriptors = 1;
-    shadowRange.BaseShaderRegister = 2;
-    shadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE particleRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    D3D12_DESCRIPTOR_RANGE countRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+    D3D12_DESCRIPTOR_RANGE shadowRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2);
 
     D3D12_ROOT_PARAMETER graphicsParams[5]{};
-    graphicsParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    graphicsParams[0].Descriptor.ShaderRegister = 0;
-    graphicsParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    dx12::SetRootCbv(graphicsParams[0], 0);
+    dx12::SetRootConstants(graphicsParams[1], 1, sizeof(DrawConstants) / 4u);
+    dx12::SetRootTable(graphicsParams[2], particleRange, D3D12_SHADER_VISIBILITY_VERTEX);
+    dx12::SetRootTable(graphicsParams[3], countRange, D3D12_SHADER_VISIBILITY_VERTEX);
+    dx12::SetRootTable(graphicsParams[4], shadowRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    graphicsParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    graphicsParams[1].Constants.ShaderRegister = 1;
-    graphicsParams[1].Constants.Num32BitValues = sizeof(DrawConstants) / 4u;
-    graphicsParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    graphicsParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    graphicsParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    graphicsParams[2].DescriptorTable.pDescriptorRanges = &particleRange;
-    graphicsParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-    graphicsParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    graphicsParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    graphicsParams[3].DescriptorTable.pDescriptorRanges = &countRange;
-    graphicsParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-    graphicsParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    graphicsParams[4].DescriptorTable.NumDescriptorRanges = 1;
-    graphicsParams[4].DescriptorTable.pDescriptorRanges = &shadowRange;
-    graphicsParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC shadowSampler{};
-    shadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    shadowSampler.MinLOD = 0.f;
-    shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
-    shadowSampler.ShaderRegister = 0;
-    shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
+    D3D12_STATIC_SAMPLER_DESC shadowSampler = dx12::ShadowComparisonSampler(0);
     D3D12_ROOT_SIGNATURE_DESC graphicsDesc{};
     graphicsDesc.NumParameters = static_cast<UINT>(_countof(graphicsParams));
     graphicsDesc.pParameters = graphicsParams;
@@ -627,52 +524,23 @@ bool ParticleScene::BuildRootSignatures(ID3D12Device* device)
     graphicsDesc.pStaticSamplers = &shadowSampler;
     graphicsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    if (!CreateRootSignature(device, graphicsDesc, m_graphicsRootSig))
+    if (!dx12::CreateRootSignature(device, graphicsDesc, m_graphicsRootSig))
         return false;
 
-    D3D12_DESCRIPTOR_RANGE computeCountRange{};
-    computeCountRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    computeCountRange.NumDescriptors = 1;
-    computeCountRange.BaseShaderRegister = 1;
-    computeCountRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_DESCRIPTOR_RANGE currentUavRange{};
-    currentUavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    currentUavRange.NumDescriptors = 1;
-    currentUavRange.BaseShaderRegister = 0;
-    currentUavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_DESCRIPTOR_RANGE nextUavRange{};
-    nextUavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    nextUavRange.NumDescriptors = 1;
-    nextUavRange.BaseShaderRegister = 1;
-    nextUavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE computeCountRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+    D3D12_DESCRIPTOR_RANGE currentUavRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+    D3D12_DESCRIPTOR_RANGE nextUavRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1);
 
     D3D12_ROOT_PARAMETER computeParams[4]{};
-    computeParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    computeParams[0].Constants.ShaderRegister = 2;
-    computeParams[0].Constants.Num32BitValues = sizeof(UpdateConstants) / 4u;
-    computeParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    computeParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    computeParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    computeParams[1].DescriptorTable.pDescriptorRanges = &computeCountRange;
-    computeParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    computeParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    computeParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    computeParams[2].DescriptorTable.pDescriptorRanges = &currentUavRange;
-    computeParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    computeParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    computeParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    computeParams[3].DescriptorTable.pDescriptorRanges = &nextUavRange;
-    computeParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    dx12::SetRootConstants(computeParams[0], 2, sizeof(UpdateConstants) / 4u);
+    dx12::SetRootTable(computeParams[1], computeCountRange, D3D12_SHADER_VISIBILITY_ALL);
+    dx12::SetRootTable(computeParams[2], currentUavRange, D3D12_SHADER_VISIBILITY_ALL);
+    dx12::SetRootTable(computeParams[3], nextUavRange, D3D12_SHADER_VISIBILITY_ALL);
 
     D3D12_ROOT_SIGNATURE_DESC computeDesc{};
     computeDesc.NumParameters = static_cast<UINT>(_countof(computeParams));
     computeDesc.pParameters = computeParams;
-    return CreateRootSignature(device, computeDesc, m_computeRootSig);
+    return dx12::CreateRootSignature(device, computeDesc, m_computeRootSig);
 }
 
 bool ParticleScene::BuildPipelineStates(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
@@ -694,63 +562,51 @@ bool ParticleScene::BuildPipelineStates(ID3D12Device* device, DXGI_FORMAT backBu
     shadowRaster.DepthBias = 2500;
     shadowRaster.SlopeScaledDepthBias = 2.f;
 
-    D3D12_RASTERIZER_DESC particleRaster{};
-    particleRaster.FillMode = D3D12_FILL_MODE_SOLID;
-    particleRaster.CullMode = D3D12_CULL_MODE_NONE;
-    particleRaster.DepthClipEnable = TRUE;
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC meshDesc{};
-    meshDesc.pRootSignature = m_graphicsRootSig.Get();
-    meshDesc.VS = {m_meshVs->GetBufferPointer(), m_meshVs->GetBufferSize()};
-    meshDesc.PS = {m_meshPs->GetBufferPointer(), m_meshPs->GetBufferSize()};
-    meshDesc.InputLayout = {kMeshLayout, static_cast<UINT>(_countof(kMeshLayout))};
-    meshDesc.BlendState = blend;
-    meshDesc.SampleMask = UINT_MAX;
-    meshDesc.RasterizerState = meshRaster;
-    meshDesc.DepthStencilState = depth;
-    meshDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC meshDesc = MeshPipelineDesc(
+        m_graphicsRootSig.Get(),
+        blend,
+        depth,
+        meshRaster,
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        DXGI_FORMAT_D32_FLOAT);
+    meshDesc.VS = dx12::ShaderBytecode(m_meshVs.Get());
+    meshDesc.PS = dx12::ShaderBytecode(m_meshPs.Get());
     meshDesc.NumRenderTargets = 1;
     meshDesc.RTVFormats[0] = backBufferFmt;
-    meshDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    meshDesc.SampleDesc.Count = 1;
     if (FAILED(device->CreateGraphicsPipelineState(&meshDesc, IID_PPV_ARGS(&m_meshPso))))
         return false;
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowDesc{};
-    shadowDesc.pRootSignature = m_graphicsRootSig.Get();
-    shadowDesc.VS = {m_shadowVs->GetBufferPointer(), m_shadowVs->GetBufferSize()};
-    shadowDesc.InputLayout = {kMeshLayout, static_cast<UINT>(_countof(kMeshLayout))};
-    shadowDesc.BlendState = blend;
-    shadowDesc.SampleMask = UINT_MAX;
-    shadowDesc.RasterizerState = shadowRaster;
-    shadowDesc.DepthStencilState = depth;
-    shadowDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowDesc = MeshPipelineDesc(
+        m_graphicsRootSig.Get(),
+        blend,
+        depth,
+        shadowRaster,
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        DXGI_FORMAT_D32_FLOAT);
+    shadowDesc.VS = dx12::ShaderBytecode(m_shadowVs.Get());
     shadowDesc.NumRenderTargets = 0;
-    shadowDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    shadowDesc.SampleDesc.Count = 1;
     if (FAILED(device->CreateGraphicsPipelineState(&shadowDesc, IID_PPV_ARGS(&m_shadowPso))))
         return false;
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC particleDesc{};
-    particleDesc.pRootSignature = m_graphicsRootSig.Get();
-    particleDesc.VS = {m_particleVs->GetBufferPointer(), m_particleVs->GetBufferSize()};
-    particleDesc.GS = {m_particleGs->GetBufferPointer(), m_particleGs->GetBufferSize()};
-    particleDesc.PS = {m_particlePs->GetBufferPointer(), m_particlePs->GetBufferSize()};
-    particleDesc.BlendState = blend;
-    particleDesc.SampleMask = UINT_MAX;
-    particleDesc.RasterizerState = particleRaster;
-    particleDesc.DepthStencilState = depth;
-    particleDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC particleDesc = MeshPipelineDesc(
+        m_graphicsRootSig.Get(),
+        blend,
+        depth,
+        meshRaster,
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
+        DXGI_FORMAT_D32_FLOAT);
+    particleDesc.InputLayout = {};
+    particleDesc.VS = dx12::ShaderBytecode(m_particleVs.Get());
+    particleDesc.GS = dx12::ShaderBytecode(m_particleGs.Get());
+    particleDesc.PS = dx12::ShaderBytecode(m_particlePs.Get());
     particleDesc.NumRenderTargets = 1;
     particleDesc.RTVFormats[0] = backBufferFmt;
-    particleDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    particleDesc.SampleDesc.Count = 1;
     if (FAILED(device->CreateGraphicsPipelineState(&particleDesc, IID_PPV_ARGS(&m_particlePso))))
         return false;
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC computeDesc{};
     computeDesc.pRootSignature = m_computeRootSig.Get();
-    computeDesc.CS = {m_updateCs->GetBufferPointer(), m_updateCs->GetBufferSize()};
+    computeDesc.CS = dx12::ShaderBytecode(m_updateCs.Get());
     return SUCCEEDED(device->CreateComputePipelineState(&computeDesc, IID_PPV_ARGS(&m_updatePso)));
 }
 
@@ -808,11 +664,7 @@ void ParticleScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X
     SceneConstants cb{};
     XMStoreFloat4x4(&cb.ViewProj, viewProj);
     cb.View = view;
-    const ShadowConstants& shadowConstants = GetShadowConstants();
-    for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade)
-        cb.LightViewProj[cascade] = shadowConstants.LightViewProj[cascade];
-    cb.CascadeFar = shadowConstants.CascadeFar;
-    cb.ShadowParams = shadowConstants.ShadowParams;
+    CopyShadowConstants(cb);
     XMStoreFloat4(&cb.CameraRight, right);
     XMStoreFloat4(&cb.CameraUp, up);
     XMStoreFloat4(&cb.CameraFacing, XMVectorNegate(forward));
@@ -840,13 +692,13 @@ ParticleScene::UpdateConstants ParticleScene::BuildUpdateConstants(float dt, uin
 
 void ParticleScene::ResetCounter(ID3D12GraphicsCommandList* cmdList, BufferWithCounter& buffer)
 {
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         buffer.Counter.Get(),
         buffer.CounterState,
         D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->CopyBufferRegion(buffer.Counter.Get(), 0, m_zeroUpload.Get(), 0, sizeof(uint32_t));
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         buffer.Counter.Get(),
         buffer.CounterState,
@@ -855,23 +707,23 @@ void ParticleScene::ResetCounter(ID3D12GraphicsCommandList* cmdList, BufferWithC
 
 void ParticleScene::CopyLiveCount(ID3D12GraphicsCommandList* cmdList, BufferWithCounter& buffer)
 {
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         buffer.Counter.Get(),
         buffer.CounterState,
         D3D12_RESOURCE_STATE_COPY_SOURCE);
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         m_liveCountBuffer.Get(),
         m_liveCountState,
         D3D12_RESOURCE_STATE_COPY_DEST);
     cmdList->CopyBufferRegion(m_liveCountBuffer.Get(), 0, buffer.Counter.Get(), 0, sizeof(uint32_t));
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         m_liveCountBuffer.Get(),
         m_liveCountState,
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         buffer.Counter.Get(),
         buffer.CounterState,
@@ -889,10 +741,10 @@ void ParticleScene::UpdateParticles(ID3D12GraphicsCommandList* cmdList, float dt
     BufferWithCounter& current = m_particleBuffers[m_currentBufferIndex];
     BufferWithCounter& next = m_particleBuffers[1u - m_currentBufferIndex];
 
-    TransitionResource(cmdList, current.Buffer.Get(), current.BufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    TransitionResource(cmdList, next.Buffer.Get(), next.BufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    TransitionResource(cmdList, current.Counter.Get(), current.CounterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    TransitionResource(cmdList, next.Counter.Get(), next.CounterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    dx12::TransitionResource(cmdList, current.Buffer.Get(), current.BufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    dx12::TransitionResource(cmdList, next.Buffer.Get(), next.BufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    dx12::TransitionResource(cmdList, current.Counter.Get(), current.CounterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    dx12::TransitionResource(cmdList, next.Counter.Get(), next.CounterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     ResetCounter(cmdList, next);
     CopyLiveCount(cmdList, current);
@@ -911,13 +763,13 @@ void ParticleScene::UpdateParticles(ID3D12GraphicsCommandList* cmdList, float dt
     cmdList->SetComputeRootDescriptorTable(ComputeRootNextParticlesUav, next.UavGpu);
     cmdList->SetPipelineState(m_updatePso.Get());
     cmdList->Dispatch(kDispatchGroups, 1, 1);
-    UavBarrier(cmdList, current.Buffer.Get());
-    UavBarrier(cmdList, next.Buffer.Get());
+    dx12::UavBarrier(cmdList, current.Buffer.Get());
+    dx12::UavBarrier(cmdList, next.Buffer.Get());
 
     m_currentBufferIndex = 1u - m_currentBufferIndex;
     BufferWithCounter& renderBuffer = m_particleBuffers[m_currentBufferIndex];
     CopyLiveCount(cmdList, renderBuffer);
-    TransitionResource(
+    dx12::TransitionResource(
         cmdList,
         renderBuffer.Buffer.Get(),
         renderBuffer.BufferState,
@@ -950,6 +802,12 @@ void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
     }
 }
 
+void ParticleScene::DrawSceneMeshes(ID3D12GraphicsCommandList* cmdList, uint32_t shadowCascadeIndex)
+{
+    DrawMesh(cmdList, m_floorMesh, m_floorWorld, true, shadowCascadeIndex);
+    DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false, shadowCascadeIndex);
+}
+
 void ParticleScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList)
 {
     RecordShadowPass(
@@ -961,8 +819,7 @@ void ParticleScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList)
             cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         },
         [&](uint32_t cascade) {
-            DrawMesh(cmdList, m_floorMesh, m_floorWorld, true, cascade);
-            DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false, cascade);
+            DrawSceneMeshes(cmdList, cascade);
         });
 }
 
@@ -987,8 +844,7 @@ void ParticleScene::RenderScene(ID3D12GraphicsCommandList* cmdList,
 
     cmdList->SetPipelineState(m_meshPso.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    DrawMesh(cmdList, m_floorMesh, m_floorWorld, true);
-    DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false);
+    DrawSceneMeshes(cmdList);
 
     cmdList->SetPipelineState(m_particlePso.Get());
     cmdList->SetGraphicsRootConstantBufferView(GraphicsRootSceneCb, m_sceneCB->GetGPUVirtualAddress());

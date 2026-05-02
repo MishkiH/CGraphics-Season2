@@ -7,6 +7,7 @@
 #include <vector>
 #include <wrl.h>
 #include <d3d12.h>
+#include <d3dcommon.h>
 
 #include "ImageLoader.h"
 
@@ -68,6 +69,155 @@ namespace dx12
         desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         desc.Flags = flags;
         return desc;
+    }
+
+    inline D3D12_CPU_DESCRIPTOR_HANDLE OffsetCpuHandle(
+        D3D12_CPU_DESCRIPTOR_HANDLE base,
+        uint32_t stride,
+        uint32_t index)
+    {
+        base.ptr += static_cast<SIZE_T>(stride) * index;
+        return base;
+    }
+
+    inline D3D12_GPU_DESCRIPTOR_HANDLE OffsetGpuHandle(
+        D3D12_GPU_DESCRIPTOR_HANDLE base,
+        uint32_t stride,
+        uint32_t index)
+    {
+        base.ptr += static_cast<UINT64>(stride) * index;
+        return base;
+    }
+
+    inline D3D12_SHADER_BYTECODE ShaderBytecode(ID3DBlob* blob)
+    {
+        return {blob->GetBufferPointer(), blob->GetBufferSize()};
+    }
+
+    inline D3D12_DESCRIPTOR_RANGE DescriptorRange(
+        D3D12_DESCRIPTOR_RANGE_TYPE type,
+        UINT count,
+        UINT shaderRegister,
+        UINT registerSpace = 0)
+    {
+        return {type, count, shaderRegister, registerSpace, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
+    }
+
+    inline void SetRootCbv(
+        D3D12_ROOT_PARAMETER& param,
+        UINT shaderRegister,
+        D3D12_SHADER_VISIBILITY visibility = D3D12_SHADER_VISIBILITY_ALL)
+    {
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        param.Descriptor.ShaderRegister = shaderRegister;
+        param.ShaderVisibility = visibility;
+    }
+
+    inline void SetRootConstants(
+        D3D12_ROOT_PARAMETER& param,
+        UINT shaderRegister,
+        UINT valueCount,
+        D3D12_SHADER_VISIBILITY visibility = D3D12_SHADER_VISIBILITY_ALL)
+    {
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        param.Constants.ShaderRegister = shaderRegister;
+        param.Constants.Num32BitValues = valueCount;
+        param.ShaderVisibility = visibility;
+    }
+
+    inline void SetRootTable(
+        D3D12_ROOT_PARAMETER& param,
+        const D3D12_DESCRIPTOR_RANGE& range,
+        D3D12_SHADER_VISIBILITY visibility)
+    {
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        param.DescriptorTable.NumDescriptorRanges = 1;
+        param.DescriptorTable.pDescriptorRanges = &range;
+        param.ShaderVisibility = visibility;
+    }
+
+    inline D3D12_STATIC_SAMPLER_DESC StaticSampler(
+        UINT shaderRegister,
+        D3D12_FILTER filter,
+        D3D12_TEXTURE_ADDRESS_MODE addressMode,
+        D3D12_SHADER_VISIBILITY visibility)
+    {
+        D3D12_STATIC_SAMPLER_DESC sampler{};
+        sampler.Filter = filter;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = addressMode;
+        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        sampler.ShaderRegister = shaderRegister;
+        sampler.ShaderVisibility = visibility;
+        return sampler;
+    }
+
+    inline D3D12_STATIC_SAMPLER_DESC ShadowComparisonSampler(UINT shaderRegister)
+    {
+        D3D12_STATIC_SAMPLER_DESC sampler = StaticSampler(
+            shaderRegister,
+            D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_SHADER_VISIBILITY_PIXEL);
+        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+        return sampler;
+    }
+
+    inline bool CreateRootSignature(
+        ID3D12Device* device,
+        const D3D12_ROOT_SIGNATURE_DESC& desc,
+        Microsoft::WRL::ComPtr<ID3D12RootSignature>& rootSignature)
+    {
+        Microsoft::WRL::ComPtr<ID3DBlob> blob;
+        Microsoft::WRL::ComPtr<ID3DBlob> errors;
+        const HRESULT hr = D3D12SerializeRootSignature(
+            &desc,
+            D3D_ROOT_SIGNATURE_VERSION_1,
+            blob.GetAddressOf(),
+            errors.GetAddressOf());
+        if (FAILED(hr))
+        {
+            if (errors)
+                throw std::runtime_error(static_cast<const char*>(errors->GetBufferPointer()));
+            return false;
+        }
+
+        return SUCCEEDED(device->CreateRootSignature(
+            0,
+            blob->GetBufferPointer(),
+            blob->GetBufferSize(),
+            IID_PPV_ARGS(&rootSignature)));
+    }
+
+    inline void TransitionResource(
+        ID3D12GraphicsCommandList* cmdList,
+        ID3D12Resource* resource,
+        D3D12_RESOURCE_STATES& currentState,
+        D3D12_RESOURCE_STATES newState)
+    {
+        if (!resource || currentState == newState)
+            return;
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = resource;
+        barrier.Transition.StateBefore = currentState;
+        barrier.Transition.StateAfter = newState;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmdList->ResourceBarrier(1, &barrier);
+        currentState = newState;
+    }
+
+    inline void UavBarrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource)
+    {
+        if (!resource)
+            return;
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        barrier.UAV.pResource = resource;
+        cmdList->ResourceBarrier(1, &barrier);
     }
 
     inline Microsoft::WRL::ComPtr<ID3D12Resource> CreateDefaultBuffer(

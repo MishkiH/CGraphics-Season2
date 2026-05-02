@@ -15,25 +15,6 @@ namespace
     constexpr float kShadowCasterDepthPadding = 95.f;
     constexpr float kShadowDepthBias = 0.0017f;
 
-    void TransitionResource(
-        ID3D12GraphicsCommandList* cmdList,
-        ID3D12Resource* resource,
-        D3D12_RESOURCE_STATES& currentState,
-        D3D12_RESOURCE_STATES newState)
-    {
-        if (!resource || currentState == newState)
-            return;
-
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = resource;
-        barrier.Transition.StateBefore = currentState;
-        barrier.Transition.StateAfter = newState;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        cmdList->ResourceBarrier(1, &barrier);
-        currentState = newState;
-    }
-
     void ExtractPerspectiveClipRange(const XMFLOAT4X4& proj, float& nearClip, float& farClip)
     {
         nearClip = 0.05f;
@@ -256,12 +237,12 @@ void CascadedShadowMap::Update(
 
 void CascadedShadowMap::TransitionToWrite(ID3D12GraphicsCommandList* cmdList)
 {
-    TransitionResource(cmdList, m_shadowMap.Get(), m_state, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    dx12::TransitionResource(cmdList, m_shadowMap.Get(), m_state, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 }
 
 void CascadedShadowMap::TransitionToRead(ID3D12GraphicsCommandList* cmdList)
 {
-    TransitionResource(cmdList, m_shadowMap.Get(), m_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    dx12::TransitionResource(cmdList, m_shadowMap.Get(), m_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
 void CascadedShadowMap::CreateSrv(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE destination) const
@@ -291,4 +272,3 @@ D3D12_RECT CascadedShadowMap::GetScissorRect() const
 {
     return {0, 0, static_cast<LONG>(ShadowMapSize), static_cast<LONG>(ShadowMapSize)};
 }
-

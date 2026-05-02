@@ -127,7 +127,7 @@ void ScatterScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->SetGraphicsRootConstantBufferView(0, m_sceneCB->GetGPUVirtualAddress());
     DrawFloor(cmdList);
-    DrawVisibleInstances(cmdList, eyePos);
+    DrawInstances(cmdList, eyePos, false);
 }
 
 void ScatterScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X4& proj, const XMFLOAT3& eyePos)
@@ -137,11 +137,7 @@ void ScatterScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X4
     SceneCBData cbData{};
     XMStoreFloat4x4(&cbData.ViewProj, XMLoadFloat4x4(&view) * XMLoadFloat4x4(&proj));
     cbData.View = view;
-    const ShadowConstants& shadowConstants = GetShadowConstants();
-    for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade)
-        cbData.LightViewProj[cascade] = shadowConstants.LightViewProj[cascade];
-    cbData.CascadeFar = shadowConstants.CascadeFar;
-    cbData.ShadowParams = shadowConstants.ShadowParams;
+    CopyShadowConstants(cbData);
     cbData.EyePos = {eyePos.x, eyePos.y, eyePos.z, 1.f};
     std::memcpy(m_mappedSceneCB, &cbData, sizeof(cbData));
 }
@@ -180,7 +176,10 @@ void ScatterScene::DrawFloor(ID3D12GraphicsCommandList* cmdList)
     cmdList->DrawIndexedInstanced(m_floorIndexCount, 1, 0, 0, 0);
 }
 
-void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, const XMFLOAT3& eyePos)
+void ScatterScene::DrawInstances(ID3D12GraphicsCommandList* cmdList,
+                                 const XMFLOAT3& eyePos,
+                                 bool depthOnly,
+                                 uint32_t cascadeIndex)
 {
     const auto& instances = m_scene.GetInstances();
 
@@ -192,9 +191,12 @@ void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, cons
 
         const MeshGpu& gpu = m_meshes[meshIndex];
         const MeshData& mesh = m_scene.GetMesh(meshIndex);
-        ID3D12DescriptorHeap* heaps[] = {gpu.SrvHeap.Get()};
-        cmdList->SetDescriptorHeaps(1, heaps);
-        cmdList->SetGraphicsRootDescriptorTable(3, gpu.ShadowSrvGpu);
+        if (!depthOnly)
+        {
+            ID3D12DescriptorHeap* heaps[] = {gpu.SrvHeap.Get()};
+            cmdList->SetDescriptorHeaps(1, heaps);
+            cmdList->SetGraphicsRootDescriptorTable(3, gpu.ShadowSrvGpu);
+        }
         cmdList->IASetVertexBuffers(0, 1, &gpu.VBV);
         cmdList->IASetIndexBuffer(&gpu.IBV);
 
@@ -203,42 +205,19 @@ void ScatterScene::DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, cons
             const SceneInstance& instance = instances[instanceIndex];
             const XMFLOAT4X4 animatedWorld = BuildAnimatedWorld(instance, instanceIndex, eyePos, m_animationTime);
             cmdList->SetGraphicsRoot32BitConstants(1, 16, &animatedWorld, 0);
+            if (depthOnly)
+                cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascadeIndex, 16);
 
             for (const SubMesh& subMesh : mesh.SubMeshes)
             {
-                D3D12_GPU_DESCRIPTOR_HANDLE srv = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
-                srv.ptr += static_cast<UINT64>(subMesh.DiffuseTexIndex) * gpu.SrvStride;
-                cmdList->SetGraphicsRootDescriptorTable(2, srv);
+                if (!depthOnly)
+                {
+                    D3D12_GPU_DESCRIPTOR_HANDLE srv = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
+                    srv.ptr += static_cast<UINT64>(subMesh.DiffuseTexIndex) * gpu.SrvStride;
+                    cmdList->SetGraphicsRootDescriptorTable(2, srv);
+                }
                 cmdList->DrawIndexedInstanced(subMesh.IndexCount, 1, subMesh.IndexStart, 0, 0);
             }
-        }
-    }
-}
-
-void ScatterScene::DrawShadowCasters(ID3D12GraphicsCommandList* cmdList, const XMFLOAT3& eyePos, uint32_t cascadeIndex)
-{
-    const auto& instances = m_scene.GetInstances();
-
-    for (uint32_t meshIndex = 0; meshIndex < SceneObjectManager::MeshCount; ++meshIndex)
-    {
-        const std::vector<uint32_t>& visibleInstances = m_visibleByMesh[meshIndex];
-        if (visibleInstances.empty())
-            continue;
-
-        const MeshGpu& gpu = m_meshes[meshIndex];
-        const MeshData& mesh = m_scene.GetMesh(meshIndex);
-        cmdList->IASetVertexBuffers(0, 1, &gpu.VBV);
-        cmdList->IASetIndexBuffer(&gpu.IBV);
-
-        for (uint32_t instanceIndex : visibleInstances)
-        {
-            const SceneInstance& instance = instances[instanceIndex];
-            const XMFLOAT4X4 animatedWorld = BuildAnimatedWorld(instance, instanceIndex, eyePos, m_animationTime);
-            cmdList->SetGraphicsRoot32BitConstants(1, 16, &animatedWorld, 0);
-            cmdList->SetGraphicsRoot32BitConstants(1, 1, &cascadeIndex, 16);
-
-            for (const SubMesh& subMesh : mesh.SubMeshes)
-                cmdList->DrawIndexedInstanced(subMesh.IndexCount, 1, subMesh.IndexStart, 0, 0);
         }
     }
 }
@@ -254,7 +233,7 @@ void ScatterScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList, const XM
             cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         },
         [&](uint32_t cascade) {
-            DrawShadowCasters(cmdList, eyePos, cascade);
+            DrawInstances(cmdList, eyePos, true, cascade);
         });
 }
 
@@ -280,66 +259,26 @@ bool ScatterScene::BuildShaders(ID3D12Device*)
 
 bool ScatterScene::BuildRootSignature(ID3D12Device* device)
 {
-    D3D12_DESCRIPTOR_RANGE texRange{};
-    texRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    texRange.NumDescriptors = 1;
-    texRange.BaseShaderRegister = 0;
-    texRange.RegisterSpace = 0;
-    texRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_DESCRIPTOR_RANGE shadowRange{};
-    shadowRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowRange.NumDescriptors = 1;
-    shadowRange.BaseShaderRegister = 1;
-    shadowRange.RegisterSpace = 0;
-    shadowRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12_DESCRIPTOR_RANGE texRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    D3D12_DESCRIPTOR_RANGE shadowRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
 
     D3D12_ROOT_PARAMETER params[4]{};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[0].Descriptor.ShaderRegister = 0;
-    params[0].Descriptor.RegisterSpace = 0;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    dx12::SetRootCbv(params[0], 0);
+    dx12::SetRootConstants(params[1], 1, 17, D3D12_SHADER_VISIBILITY_VERTEX);
+    dx12::SetRootTable(params[2], texRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootTable(params[3], shadowRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;
-    params[1].Constants.RegisterSpace = 0;
-    params[1].Constants.Num32BitValues = 17;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[2].DescriptorTable.NumDescriptorRanges = 1;
-    params[2].DescriptorTable.pDescriptorRanges = &texRange;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[3].DescriptorTable.NumDescriptorRanges = 1;
-    params[3].DescriptorTable.pDescriptorRanges = &shadowRange;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC samplers[2]{};
-    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 1;
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC samplers[2]{
+        dx12::StaticSampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_PIXEL),
+        dx12::ShadowComparisonSampler(1),
+    };
 
     D3D12_ROOT_SIGNATURE_DESC desc{};
     desc.NumParameters = static_cast<UINT>(_countof(params)); desc.pParameters = params;
     desc.NumStaticSamplers = static_cast<UINT>(_countof(samplers)); desc.pStaticSamplers = samplers;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    ComPtr<ID3DBlob> blob, err;
-    if (FAILED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) return false;
-    return SUCCEEDED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)));
+    return dx12::CreateRootSignature(device, desc, m_rootSig);
 }
 
 bool ScatterScene::BuildPSO(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
@@ -511,20 +450,18 @@ void ScatterScene::UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* c
 void ScatterScene::BuildShadowDescriptors(ID3D12Device* device)
 {
     for (MeshGpu& gpu : m_meshes)
-    {
-        D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = gpu.SrvHeap->GetCPUDescriptorHandleForHeapStart();
-        cpuHandle.ptr += static_cast<SIZE_T>(gpu.ShadowSrvIndex) * gpu.SrvStride;
-        CreateShadowSrv(device, cpuHandle);
+        CreateMeshShadowSrv(device, gpu);
 
-        gpu.ShadowSrvGpu = gpu.SrvHeap->GetGPUDescriptorHandleForHeapStart();
-        gpu.ShadowSrvGpu.ptr += static_cast<UINT64>(gpu.ShadowSrvIndex) * gpu.SrvStride;
-    }
+    CreateMeshShadowSrv(device, m_floorMesh);
+}
 
-    D3D12_CPU_DESCRIPTOR_HANDLE floorShadowCpu = m_floorMesh.SrvHeap->GetCPUDescriptorHandleForHeapStart();
-    floorShadowCpu.ptr += static_cast<SIZE_T>(m_floorMesh.ShadowSrvIndex) * m_floorMesh.SrvStride;
-    CreateShadowSrv(device, floorShadowCpu);
-    m_floorMesh.ShadowSrvGpu = m_floorMesh.SrvHeap->GetGPUDescriptorHandleForHeapStart();
-    m_floorMesh.ShadowSrvGpu.ptr += static_cast<UINT64>(m_floorMesh.ShadowSrvIndex) * m_floorMesh.SrvStride;
+void ScatterScene::CreateMeshShadowSrv(ID3D12Device* device, MeshGpu& gpu)
+{
+    gpu.ShadowSrvGpu = CreateShadowSrvInHeap(
+        device,
+        gpu.SrvHeap.Get(),
+        gpu.SrvStride,
+        gpu.ShadowSrvIndex);
 }
 
 bool ScatterScene::BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32_t height)

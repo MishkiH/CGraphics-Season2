@@ -136,6 +136,7 @@ private:
                   const DirectX::XMFLOAT4X4& world,
                   bool isFloor,
                   uint32_t shadowCascadeIndex = 0);
+    void DrawSceneMeshes(ID3D12GraphicsCommandList* cmdList, uint32_t shadowCascadeIndex = 0);
     void RenderShadowMaps(ID3D12GraphicsCommandList* cmdList);
     void RenderScene(ID3D12GraphicsCommandList* cmdList,
                      D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtv,

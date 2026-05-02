@@ -260,102 +260,45 @@ bool DeferredScene::BuildShaders(ID3D12Device*)
 
 bool DeferredScene::BuildRootSignature(ID3D12Device* device)
 {
-    D3D12_DESCRIPTOR_RANGE texRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
-    D3D12_DESCRIPTOR_RANGE gbRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBuffer::SrvCount, 3, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
-    D3D12_DESCRIPTOR_RANGE normRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
-    D3D12_DESCRIPTOR_RANGE dispRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
-    D3D12_DESCRIPTOR_RANGE shadowRange{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND};
+    D3D12_DESCRIPTOR_RANGE texRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    D3D12_DESCRIPTOR_RANGE gbRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBuffer::SrvCount, 3);
+    D3D12_DESCRIPTOR_RANGE normRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+    D3D12_DESCRIPTOR_RANGE dispRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2);
+    D3D12_DESCRIPTOR_RANGE shadowRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6);
 
     D3D12_ROOT_PARAMETER params[8]{};
+    dx12::SetRootCbv(params[0], 0);
+    dx12::SetRootTable(params[1], texRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootConstants(params[2], 2, 8, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootCbv(params[3], 1, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootTable(params[4], gbRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootTable(params[5], normRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootTable(params[6], dispRange, D3D12_SHADER_VISIBILITY_ALL);
+    dx12::SetRootTable(params[7], shadowRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[0].Descriptor.ShaderRegister = 0;
-    params[0].Descriptor.RegisterSpace = 0;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &texRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 2;
-    params[2].Constants.RegisterSpace = 0;
-    params[2].Constants.Num32BitValues = 8;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[3].Descriptor.ShaderRegister = 1;
-    params[3].Descriptor.RegisterSpace = 0;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[4].DescriptorTable.NumDescriptorRanges = 1;
-    params[4].DescriptorTable.pDescriptorRanges = &gbRange;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[5].DescriptorTable.NumDescriptorRanges = 1;
-    params[5].DescriptorTable.pDescriptorRanges = &normRange;
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[6].DescriptorTable.NumDescriptorRanges = 1;
-    params[6].DescriptorTable.pDescriptorRanges = &dispRange;
-    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[7].DescriptorTable.NumDescriptorRanges = 1;
-    params[7].DescriptorTable.pDescriptorRanges = &shadowRange;
-    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC samplers[2]{};
-    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 1;
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC samplers[2]{
+        dx12::StaticSampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_SHADER_VISIBILITY_ALL),
+        dx12::ShadowComparisonSampler(1),
+    };
 
     D3D12_ROOT_SIGNATURE_DESC desc{};
     desc.NumParameters = static_cast<UINT>(_countof(params)); desc.pParameters = params;
     desc.NumStaticSamplers = static_cast<UINT>(_countof(samplers)); desc.pStaticSamplers = samplers;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    ComPtr<ID3DBlob> blob, err;
-    HRESULT hr = D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
-    if (FAILED(hr)) { if (err) throw std::runtime_error((const char*)err->GetBufferPointer()); return false; }
-    if (FAILED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_rootSig))))
+    if (!dx12::CreateRootSignature(device, desc, m_rootSig))
         return false;
 
     D3D12_ROOT_PARAMETER shadowParams[2]{};
-    shadowParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    shadowParams[0].Descriptor.ShaderRegister = 0;
-    shadowParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-    shadowParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    shadowParams[1].Constants.ShaderRegister = 3;
-    shadowParams[1].Constants.Num32BitValues = 1;
-    shadowParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    dx12::SetRootCbv(shadowParams[0], 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    dx12::SetRootConstants(shadowParams[1], 3, 1, D3D12_SHADER_VISIBILITY_VERTEX);
 
     D3D12_ROOT_SIGNATURE_DESC shadowDesc{};
     shadowDesc.NumParameters = static_cast<UINT>(_countof(shadowParams));
     shadowDesc.pParameters = shadowParams;
     shadowDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
-    blob.Reset();
-    err.Reset();
-    hr = D3D12SerializeRootSignature(&shadowDesc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
-    if (FAILED(hr)) { if (err) throw std::runtime_error((const char*)err->GetBufferPointer()); return false; }
-    return SUCCEEDED(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_shadowRootSig)));
+    return dx12::CreateRootSignature(device, shadowDesc, m_shadowRootSig);
 }
 
 bool DeferredScene::BuildPSOs(ID3D12Device* device, DXGI_FORMAT backBufferFmt)
@@ -478,11 +421,11 @@ bool DeferredScene::BuildLightingSrvHeap(ID3D12Device* device)
         m_gBuffer->GetSrvCpuTable(),
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    dst.ptr += static_cast<SIZE_T>(GBuffer::SrvCount) * m_lightingSrvStride;
-    CreateShadowSrv(device, dst);
-
-    m_shadowMapSrvGpu = m_lightingSrvHeap->GetGPUDescriptorHandleForHeapStart();
-    m_shadowMapSrvGpu.ptr += static_cast<UINT64>(GBuffer::SrvCount) * m_lightingSrvStride;
+    m_shadowMapSrvGpu = CreateShadowSrvInHeap(
+        device,
+        m_lightingSrvHeap.Get(),
+        m_lightingSrvStride,
+        GBuffer::SrvCount);
     return true;
 }
 
@@ -672,13 +615,7 @@ void DeferredScene::UpdatePassConstants(uint32_t width, uint32_t height)
     XMStoreFloat4x4(&cb.View, XMMatrixTranspose(view));
     XMStoreFloat4x4(&cb.ViewProj, XMMatrixTranspose(vp));
     XMStoreFloat4x4(&cb.InvViewProj, XMMatrixTranspose(ivp));
-    const ShadowConstants& shadowConstants = GetShadowConstants();
-    for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade)
-        XMStoreFloat4x4(
-            &cb.LightViewProj[cascade],
-            XMMatrixTranspose(XMLoadFloat4x4(&shadowConstants.LightViewProj[cascade])));
-    cb.CascadeFar = shadowConstants.CascadeFar;
-    cb.ShadowParams = shadowConstants.ShadowParams;
+    CopyTransposedShadowConstants(cb);
     cb.EyePosW = {m_eye.x, m_eye.y, m_eye.z, 1.f};
     cb.RenderTargetSize = {(float)width, (float)height, 1.f / width, 1.f / height};
     cb.TessParams = BuildTessellationParams(m_options.UseTessellation);

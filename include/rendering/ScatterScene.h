@@ -81,9 +81,12 @@ private:
                               const DirectX::XMFLOAT3& eyePos);
     void GatherVisibleInstances(const DirectX::XMFLOAT4X4& viewProj);
     void DrawFloor(ID3D12GraphicsCommandList* cmdList);
-    void DrawVisibleInstances(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos);
-    void DrawShadowCasters(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos, uint32_t cascadeIndex);
+    void DrawInstances(ID3D12GraphicsCommandList* cmdList,
+                       const DirectX::XMFLOAT3& eyePos,
+                       bool depthOnly,
+                       uint32_t cascadeIndex = 0);
     void RenderShadowMaps(ID3D12GraphicsCommandList* cmdList, const DirectX::XMFLOAT3& eyePos);
+    void CreateMeshShadowSrv(ID3D12Device* device, MeshGpu& gpu);
 
     void UploadMesh(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
                     MeshGpu& gpu, const MeshData& mesh,
