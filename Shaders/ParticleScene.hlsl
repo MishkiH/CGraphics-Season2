@@ -20,11 +20,13 @@ cbuffer DrawCB : register(b1)
     float gCheckerTileSize;
     float gIsFloor;
     float gShadowCascadeIndex;
-    float gDrawPadding;
+    float gAlphaCutout;
 };
 
 Texture2DArray gShadowMaps : register(t2);
+Texture2D gPrisonTexture : register(t3);
 SamplerComparisonState gShadowSampler : register(s0);
+SamplerState gLinearSampler : register(s1);
 
 #include "ShadowCommon.hlsl"
 
@@ -58,6 +60,7 @@ struct MeshVSOut
     float4 PosH    : SV_POSITION;
     float3 PosW    : TEXCOORD0;
     float3 PosV    : TEXCOORD1;
+    float2 TexC    : TEXCOORD2;
     float3 NormalW : NORMAL;
 };
 
@@ -68,15 +71,34 @@ MeshVSOut MeshVS(MeshVSIn vin)
     vout.PosH = mul(posW, gViewProj);
     vout.PosW = posW.xyz;
     vout.PosV = mul(posW, gView).xyz;
+    vout.TexC = vin.TexC;
     vout.NormalW = normalize(mul(vin.Normal, (float3x3)gWorld));
     return vout;
 }
 
-float4 ShadowVS(MeshVSIn vin) : SV_POSITION
+struct ShadowVSOut
 {
+    float4 PosH : SV_POSITION;
+    float2 TexC : TEXCOORD0;
+};
+
+ShadowVSOut ShadowVS(MeshVSIn vin)
+{
+    ShadowVSOut vout;
     const uint cascadeIndex = (uint)gShadowCascadeIndex;
     const float4 posW = mul(float4(vin.Pos, 1.0), gWorld);
-    return mul(posW, gLightViewProj[cascadeIndex]);
+    vout.PosH = mul(posW, gLightViewProj[cascadeIndex]);
+    vout.TexC = vin.TexC;
+    return vout;
+}
+
+void ShadowPS(ShadowVSOut pin)
+{
+    if (gAlphaCutout > 0.5)
+    {
+        const float alpha = gPrisonTexture.Sample(gLinearSampler, pin.TexC).a;
+        clip(alpha - 0.1);
+    }
 }
 
 float4 MeshPS(MeshVSOut pin) : SV_Target
@@ -85,9 +107,15 @@ float4 MeshPS(MeshVSOut pin) : SV_Target
     const float3 L = normalize(-gLightDirection.xyz);
     const float diffuse = saturate(dot(N, L));
     const float skyBounce = saturate(N.y * 0.5 + 0.5);
-    const float shadow = SampleCsmShadowPcf(pin.PosW, max(pin.PosV.z, 0.0), N, L);
 
     float3 baseColor = gBaseColor.rgb;
+    if (gAlphaCutout > 0.5)
+    {
+        const float4 textureColor = gPrisonTexture.Sample(gLinearSampler, pin.TexC);
+        clip(textureColor.a - 0.1);
+        baseColor *= textureColor.rgb;
+    }
+
     if (gIsFloor > 0.5)
     {
         const int2 tileCoord = int2(floor(pin.PosW.xz / max(gCheckerTileSize, 0.001)));
@@ -97,6 +125,7 @@ float4 MeshPS(MeshVSOut pin) : SV_Target
         baseColor = isEvenTile ? darkLettuce : darkBrown;
     }
 
+    const float shadow = SampleCsmShadowPcf(pin.PosW, max(pin.PosV.z, 0.0), N, L);
     float3 litColor = baseColor * gAmbientColor.rgb;
     litColor += baseColor * gLightColor.rgb * diffuse * shadow;
     litColor += baseColor * (0.08 * skyBounce);

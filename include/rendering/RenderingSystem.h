@@ -53,6 +53,8 @@ public:
     bool FrustumCullingEnabled() const;
     bool OctreeCullingEnabled() const;
     uint32_t ScatterVisibleCount() const;
+    bool DropParticleSceneCage();
+    bool ParticleSceneCageVisible() const;
 
 private:
     void BeginFrame();

@@ -315,6 +315,16 @@ uint32_t RenderingSystem::ScatterVisibleCount() const
     return m_scatterScene ? m_scatterScene->LastVisibleCount() : 0u;
 }
 
+bool RenderingSystem::DropParticleSceneCage()
+{
+    return m_particleScene && m_particleScene->DropPrisonCage();
+}
+
+bool RenderingSystem::ParticleSceneCageVisible() const
+{
+    return m_particleScene && m_particleScene->IsPrisonCageVisible();
+}
+
 void RenderingSystem::SyncDeferredSceneCameras()
 {
     if (m_handScene) m_handScene->SetCamera(m_view, m_proj, m_eye);

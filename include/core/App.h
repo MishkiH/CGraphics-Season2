@@ -63,4 +63,5 @@ private:
     bool m_prevT = false;
     bool m_prevF = false;
     bool m_prevO = false;
+    bool m_prevC = false;
 };

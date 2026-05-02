@@ -25,6 +25,8 @@ public:
 
     void Shutdown();
     void OnResize(ID3D12Device* device, uint32_t width, uint32_t height);
+    bool DropPrisonCage();
+    bool IsPrisonCageVisible() const { return m_prisonVisible; }
 
     void RecordCommands(ID3D12GraphicsCommandList* cmdList,
                         const DirectX::XMFLOAT4X4& view,
@@ -68,7 +70,7 @@ private:
         float CheckerTileSize = 0.f;
         float IsFloor = 0.f;
         float ShadowCascadeIndex = 0.f;
-        float Padding = 0.f;
+        float AlphaCutout = 0.f;
     };
 
     struct alignas(16) UpdateConstants
@@ -103,6 +105,7 @@ private:
         uint32_t IndexStart = 0;
         uint32_t IndexCount = 0;
         DirectX::XMFLOAT4 BaseColor{1.f, 1.f, 1.f, 1.f};
+        bool AlphaCutout = false;
     };
 
     struct MeshGpu
@@ -126,6 +129,7 @@ private:
     bool BuildDepthBuffer(ID3D12Device* device, uint32_t width, uint32_t height);
 
     void UpdateSceneConstants(const DirectX::XMFLOAT4X4& view, const DirectX::XMFLOAT4X4& proj);
+    void UpdatePrisonCage(float dt);
     UpdateConstants BuildUpdateConstants(float dt, uint32_t emitCount) const;
 
     void ResetCounter(ID3D12GraphicsCommandList* cmdList, BufferWithCounter& buffer);
@@ -150,6 +154,8 @@ private:
     DirectX::XMFLOAT3 m_emitterPosition{0.f, 1.65f, 0.f};
     DirectX::XMFLOAT4X4 m_bunnyWorld{};
     DirectX::XMFLOAT4X4 m_floorWorld{};
+    float m_prisonFallY = 0.f;
+    bool m_prisonVisible = false;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_graphicsRootSig;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_computeRootSig;
@@ -161,6 +167,7 @@ private:
     Microsoft::WRL::ComPtr<ID3DBlob> m_meshVs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_meshPs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_shadowVs;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_shadowPs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_particleVs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_particleGs;
     Microsoft::WRL::ComPtr<ID3DBlob> m_particlePs;
@@ -171,10 +178,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_liveCountBuffer;
     D3D12_GPU_DESCRIPTOR_HANDLE m_liveCountSrvGpu{};
     D3D12_GPU_DESCRIPTOR_HANDLE m_shadowMapSrvGpu{};
+    D3D12_GPU_DESCRIPTOR_HANDLE m_prisonTextureSrvGpu{};
     D3D12_RESOURCE_STATES m_liveCountState = D3D12_RESOURCE_STATE_COMMON;
 
     MeshGpu m_bunnyMesh;
     MeshGpu m_floorMesh;
+    MeshGpu m_prisonMesh;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_prisonTexture;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_sceneCB;
     uint8_t* m_mappedSceneCB = nullptr;

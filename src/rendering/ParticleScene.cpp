@@ -2,6 +2,7 @@
 
 #include "AssetPath.h"
 #include "Dx12Helpers.h"
+#include "ImageLoader.h"
 #include "ObjLoader.h"
 
 #include <algorithm>
@@ -30,6 +31,10 @@ namespace
     constexpr float kParticleGravity = -7.8f;
     constexpr float kParticleBaseSize = 0.26f;
     constexpr float kFloorCheckerTileSize = 14.f;
+    constexpr float kPrisonHalfExtent = 31.f;
+    constexpr float kPrisonHeight = 42.f;
+    constexpr float kPrisonSpawnHeight = 60.f;
+    constexpr float kPrisonFallSpeed = 60.f;
     const XMFLOAT4 kSunsetLightDirection{-0.28f, -1.f, -0.42f, 0.f};
     const XMFLOAT4 kSunsetLightColor{0.98f, 0.70f, 0.46f, 1.f};
     const XMFLOAT4 kSunsetAmbientColor{0.14f, 0.17f, 0.27f, 1.f};
@@ -46,7 +51,8 @@ namespace
         DescriptorParticle0Uav = 3,
         DescriptorParticle1Uav = 4,
         DescriptorShadowMapSrv = 5,
-        DescriptorCount = 6,
+        DescriptorPrisonTextureSrv = 6,
+        DescriptorCount = 7,
     };
 
     enum GraphicsRootParam : uint32_t
@@ -56,6 +62,7 @@ namespace
         GraphicsRootParticlesSrv = 2,
         GraphicsRootCountSrv = 3,
         GraphicsRootShadowMapSrv = 4,
+        GraphicsRootPrisonTextureSrv = 5,
     };
 
     enum ComputeRootParam : uint32_t
@@ -128,6 +135,46 @@ namespace
         return mesh;
     }
 
+    MeshData BuildPrisonMesh()
+    {
+        MeshData mesh;
+        mesh.Vertices.reserve(20);
+        mesh.Indices.reserve(30);
+
+        auto addQuad = [&](XMFLOAT3 bottomLeft,
+                           XMFLOAT3 topLeft,
+                           XMFLOAT3 bottomRight,
+                           XMFLOAT3 topRight,
+                           XMFLOAT3 normal,
+                           XMFLOAT3 tangent) {
+            const uint32_t base = static_cast<uint32_t>(mesh.Vertices.size());
+            mesh.Vertices.push_back({bottomLeft, normal, {0.f, 1.f}, tangent});
+            mesh.Vertices.push_back({topLeft, normal, {0.f, 0.f}, tangent});
+            mesh.Vertices.push_back({bottomRight, normal, {1.f, 1.f}, tangent});
+            mesh.Vertices.push_back({topRight, normal, {1.f, 0.f}, tangent});
+            mesh.Indices.insert(mesh.Indices.end(), {base, base + 1, base + 2, base + 2, base + 1, base + 3});
+        };
+
+        const float e = kPrisonHalfExtent;
+        const float h = kPrisonHeight;
+
+        addQuad({-e, 0.f, -e}, {-e, h, -e}, { e, 0.f, -e}, { e, h, -e}, {0.f, 0.f, -1.f}, {1.f, 0.f, 0.f});
+        addQuad({ e, 0.f,  e}, { e, h,  e}, {-e, 0.f,  e}, {-e, h,  e}, {0.f, 0.f,  1.f}, {-1.f, 0.f, 0.f});
+        addQuad({-e, 0.f,  e}, {-e, h,  e}, {-e, 0.f, -e}, {-e, h, -e}, {-1.f, 0.f, 0.f}, {0.f, 0.f, -1.f});
+        addQuad({ e, 0.f, -e}, { e, h, -e}, { e, 0.f,  e}, { e, h,  e}, { 1.f, 0.f, 0.f}, {0.f, 0.f,  1.f});
+        addQuad({-e, h,  e}, {-e, h, -e}, { e, h,  e}, { e, h, -e}, {0.f, 1.f, 0.f}, {1.f, 0.f, 0.f});
+
+        SubMesh subMesh;
+        subMesh.IndexStart = 0;
+        subMesh.IndexCount = static_cast<uint32_t>(mesh.Indices.size());
+        subMesh.Material.Kd = {0.85f, 0.85f, 0.85f};
+        mesh.SubMeshes.push_back(subMesh);
+
+        mesh.BoundsMin = {-kPrisonHalfExtent, 0.f, -kPrisonHalfExtent};
+        mesh.BoundsMax = {kPrisonHalfExtent, kPrisonHeight, kPrisonHalfExtent};
+        return mesh;
+    }
+
     XMFLOAT4 MakeBaseColor(const XMFLOAT3& color, const XMFLOAT4& fallback = XMFLOAT4{1.f, 1.f, 1.f, 1.f})
     {
         const float luminance = color.x + color.y + color.z;
@@ -150,6 +197,8 @@ bool ParticleScene::Initialize(ID3D12Device* device, ID3D12CommandQueue* cmdQueu
     m_emitAccumulator = 0.f;
     XMStoreFloat4x4(&m_bunnyWorld, XMMatrixIdentity());
     XMStoreFloat4x4(&m_floorWorld, XMMatrixIdentity());
+    m_prisonFallY = 0.f;
+    m_prisonVisible = false;
 
     ComPtr<ID3D12CommandAllocator> uploadAlloc;
     ComPtr<ID3D12GraphicsCommandList> uploadList;
@@ -210,11 +259,14 @@ void ParticleScene::Shutdown()
     };
     resetMesh(m_bunnyMesh);
     resetMesh(m_floorMesh);
+    resetMesh(m_prisonMesh);
+    m_prisonTexture.Reset();
 
     m_descriptorHeap.Reset();
     m_meshVs.Reset();
     m_meshPs.Reset();
     m_shadowVs.Reset();
+    m_shadowPs.Reset();
     m_particleVs.Reset();
     m_particleGs.Reset();
     m_particlePs.Reset();
@@ -236,6 +288,16 @@ void ParticleScene::OnResize(ID3D12Device* device, uint32_t width, uint32_t heig
     BuildDepthBuffer(device, width, height);
 }
 
+bool ParticleScene::DropPrisonCage()
+{
+    if (m_prisonVisible)
+        return false;
+
+    m_prisonVisible = true;
+    m_prisonFallY = kPrisonSpawnHeight;
+    return true;
+}
+
 void ParticleScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
                                    const XMFLOAT4X4& view,
                                    const XMFLOAT4X4& proj,
@@ -244,6 +306,7 @@ void ParticleScene::RecordCommands(ID3D12GraphicsCommandList* cmdList,
                                    D3D12_RECT scissorRect,
                                    float dt)
 {
+    UpdatePrisonCage(dt);
     UpdateSceneConstants(view, proj);
     UpdateParticles(cmdList, dt);
     RenderShadowMaps(cmdList);
@@ -284,6 +347,7 @@ bool ParticleScene::BuildShaders()
     return compile("MeshVS", "vs_5_0", m_meshVs)
         && compile("MeshPS", "ps_5_0", m_meshPs)
         && compile("ShadowVS", "vs_5_0", m_shadowVs)
+        && compile("ShadowPS", "ps_5_0", m_shadowPs)
         && compile("ParticleVS", "vs_5_0", m_particleVs)
         && compile("ParticleGS", "gs_5_0", m_particleGs)
         && compile("ParticlePS", "ps_5_0", m_particlePs)
@@ -443,7 +507,7 @@ bool ParticleScene::BuildGeometry(ID3D12Device* device,
     const float bunnyHeight = meshHeight * scale;
     m_emitterPosition = {0.f, bunnyHeight * kEmitterHeightFactor + kEmitterHeightOffset, 0.f};
 
-    auto uploadMesh = [&](const MeshData& meshData, MeshGpu& gpu, const XMFLOAT4& fallbackColor) {
+    auto uploadMesh = [&](const MeshData& meshData, MeshGpu& gpu, const XMFLOAT4& fallbackColor, bool alphaCutout = false) {
         const UINT64 vbSize = static_cast<UINT64>(meshData.Vertices.size()) * sizeof(MeshVertex);
         const UINT64 ibSize = static_cast<UINT64>(meshData.Indices.size()) * sizeof(uint32_t);
 
@@ -464,6 +528,7 @@ bool ParticleScene::BuildGeometry(ID3D12Device* device,
             draw.IndexStart = 0;
             draw.IndexCount = static_cast<uint32_t>(meshData.Indices.size());
             draw.BaseColor = fallbackColor;
+            draw.AlphaCutout = alphaCutout;
             gpu.Draws.push_back(draw);
             return;
         }
@@ -475,12 +540,41 @@ bool ParticleScene::BuildGeometry(ID3D12Device* device,
             draw.IndexStart = subMesh.IndexStart;
             draw.IndexCount = subMesh.IndexCount;
             draw.BaseColor = MakeBaseColor(subMesh.Material.Kd, fallbackColor);
+            draw.AlphaCutout = alphaCutout;
             gpu.Draws.push_back(draw);
         }
     };
 
     uploadMesh(bunnyMesh, m_bunnyMesh, {0.82f, 0.80f, 0.75f, 1.f});
     uploadMesh(BuildFloorMesh(), m_floorMesh, {0.22f, 0.08f, 0.11f, 1.f});
+    uploadMesh(BuildPrisonMesh(), m_prisonMesh, {0.85f, 0.85f, 0.85f, 1.f}, true);
+
+    Image prisonImage;
+    if (!LoadImage(ResolveAsset("Meshes/zaya/PrisonTexture.png"), prisonImage))
+        return false;
+
+    m_prisonTexture = dx12::CreateTexture2D(
+        device,
+        prisonImage.Width,
+        prisonImage.Height,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        D3D12_RESOURCE_STATE_COPY_DEST);
+    dx12::UploadTexture2D(device, uploadList, m_prisonTexture.Get(), prisonImage, uploads);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    const D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = dx12::OffsetCpuHandle(
+        m_descriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+        m_descriptorStride,
+        DescriptorPrisonTextureSrv);
+    device->CreateShaderResourceView(m_prisonTexture.Get(), &srvDesc, srvCpu);
+    m_prisonTextureSrvGpu = dx12::OffsetGpuHandle(
+        m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+        m_descriptorStride,
+        DescriptorPrisonTextureSrv);
     return true;
 }
 
@@ -508,20 +602,29 @@ bool ParticleScene::BuildRootSignatures(ID3D12Device* device)
     D3D12_DESCRIPTOR_RANGE particleRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
     D3D12_DESCRIPTOR_RANGE countRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
     D3D12_DESCRIPTOR_RANGE shadowRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2);
+    D3D12_DESCRIPTOR_RANGE prisonTextureRange = dx12::DescriptorRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3);
 
-    D3D12_ROOT_PARAMETER graphicsParams[5]{};
+    D3D12_ROOT_PARAMETER graphicsParams[6]{};
     dx12::SetRootCbv(graphicsParams[0], 0);
     dx12::SetRootConstants(graphicsParams[1], 1, sizeof(DrawConstants) / 4u);
     dx12::SetRootTable(graphicsParams[2], particleRange, D3D12_SHADER_VISIBILITY_VERTEX);
     dx12::SetRootTable(graphicsParams[3], countRange, D3D12_SHADER_VISIBILITY_VERTEX);
     dx12::SetRootTable(graphicsParams[4], shadowRange, D3D12_SHADER_VISIBILITY_PIXEL);
+    dx12::SetRootTable(graphicsParams[5], prisonTextureRange, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    D3D12_STATIC_SAMPLER_DESC shadowSampler = dx12::ShadowComparisonSampler(0);
+    D3D12_STATIC_SAMPLER_DESC samplers[] = {
+        dx12::ShadowComparisonSampler(0),
+        dx12::StaticSampler(
+            1,
+            D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_SHADER_VISIBILITY_PIXEL),
+    };
     D3D12_ROOT_SIGNATURE_DESC graphicsDesc{};
     graphicsDesc.NumParameters = static_cast<UINT>(_countof(graphicsParams));
     graphicsDesc.pParameters = graphicsParams;
-    graphicsDesc.NumStaticSamplers = 1;
-    graphicsDesc.pStaticSamplers = &shadowSampler;
+    graphicsDesc.NumStaticSamplers = static_cast<UINT>(_countof(samplers));
+    graphicsDesc.pStaticSamplers = samplers;
     graphicsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     if (!dx12::CreateRootSignature(device, graphicsDesc, m_graphicsRootSig))
@@ -584,6 +687,7 @@ bool ParticleScene::BuildPipelineStates(ID3D12Device* device, DXGI_FORMAT backBu
         D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
         DXGI_FORMAT_D32_FLOAT);
     shadowDesc.VS = dx12::ShaderBytecode(m_shadowVs.Get());
+    shadowDesc.PS = dx12::ShaderBytecode(m_shadowPs.Get());
     shadowDesc.NumRenderTargets = 0;
     if (FAILED(device->CreateGraphicsPipelineState(&shadowDesc, IID_PPV_ARGS(&m_shadowPso))))
         return false;
@@ -672,6 +776,14 @@ void ParticleScene::UpdateSceneConstants(const XMFLOAT4X4& view, const XMFLOAT4X
     cb.LightColor = kSunsetLightColor;
     cb.AmbientColor = kSunsetAmbientColor;
     std::memcpy(m_mappedSceneCB, &cb, sizeof(cb));
+}
+
+void ParticleScene::UpdatePrisonCage(float dt)
+{
+    if (!m_prisonVisible || m_prisonFallY <= 0.f)
+        return;
+
+    m_prisonFallY = std::max(0.f, m_prisonFallY - kPrisonFallSpeed * ClampDeltaTime(dt));
 }
 
 ParticleScene::UpdateConstants ParticleScene::BuildUpdateConstants(float dt, uint32_t emitCount) const
@@ -793,6 +905,7 @@ void ParticleScene::DrawMesh(ID3D12GraphicsCommandList* cmdList,
         constants.CheckerTileSize = isFloor ? kFloorCheckerTileSize : 0.f;
         constants.IsFloor = isFloor ? 1.f : 0.f;
         constants.ShadowCascadeIndex = static_cast<float>(shadowCascadeIndex);
+        constants.AlphaCutout = draw.AlphaCutout ? 1.f : 0.f;
         cmdList->SetGraphicsRoot32BitConstants(
             GraphicsRootDrawConstants,
             sizeof(DrawConstants) / 4u,
@@ -806,6 +919,12 @@ void ParticleScene::DrawSceneMeshes(ID3D12GraphicsCommandList* cmdList, uint32_t
 {
     DrawMesh(cmdList, m_floorMesh, m_floorWorld, true, shadowCascadeIndex);
     DrawMesh(cmdList, m_bunnyMesh, m_bunnyWorld, false, shadowCascadeIndex);
+    if (m_prisonVisible)
+    {
+        XMFLOAT4X4 prisonWorld{};
+        XMStoreFloat4x4(&prisonWorld, XMMatrixTranslation(0.f, m_prisonFallY, 0.f));
+        DrawMesh(cmdList, m_prisonMesh, prisonWorld, false, shadowCascadeIndex);
+    }
 }
 
 void ParticleScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList)
@@ -813,8 +932,11 @@ void ParticleScene::RenderShadowMaps(ID3D12GraphicsCommandList* cmdList)
     RecordShadowPass(
         cmdList,
         [&]() {
+            ID3D12DescriptorHeap* heaps[] = {m_descriptorHeap.Get()};
+            cmdList->SetDescriptorHeaps(1, heaps);
             cmdList->SetGraphicsRootSignature(m_graphicsRootSig.Get());
             cmdList->SetGraphicsRootConstantBufferView(GraphicsRootSceneCb, m_sceneCB->GetGPUVirtualAddress());
+            cmdList->SetGraphicsRootDescriptorTable(GraphicsRootPrisonTextureSrv, m_prisonTextureSrvGpu);
             cmdList->SetPipelineState(m_shadowPso.Get());
             cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         },
@@ -841,6 +963,7 @@ void ParticleScene::RenderScene(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* heaps[] = {m_descriptorHeap.Get()};
     cmdList->SetDescriptorHeaps(1, heaps);
     cmdList->SetGraphicsRootDescriptorTable(GraphicsRootShadowMapSrv, m_shadowMapSrvGpu);
+    cmdList->SetGraphicsRootDescriptorTable(GraphicsRootPrisonTextureSrv, m_prisonTextureSrvGpu);
 
     cmdList->SetPipelineState(m_meshPso.Get());
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

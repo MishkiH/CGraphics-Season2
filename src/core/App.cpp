@@ -111,19 +111,14 @@ void App::HandleSceneFeatureHotkeys()
     const bool tDown = m_input->IsKeyDown('T');
     const bool fDown = m_input->IsKeyDown('F');
     const bool oDown = m_input->IsKeyDown('O');
-    auto syncAllFeatureKeys = [&]() {
-        SyncKeyState(nDown, m_prevN);
-        SyncKeyState(mDown, m_prevM);
-        SyncKeyState(tDown, m_prevT);
-        SyncKeyState(fDown, m_prevF);
-        SyncKeyState(oDown, m_prevO);
-    };
+    const bool cDown = m_input->IsKeyDown('C');
 
     if (sceneMode == RenderingSystem::ScatterSceneMode)
     {
         SyncKeyState(nDown, m_prevN);
         SyncKeyState(mDown, m_prevM);
         SyncKeyState(tDown, m_prevT);
+        SyncKeyState(cDown, m_prevC);
         if (JustPressed(fDown, m_prevF)) { m_renderer->ToggleFrustumCulling(); UpdateWindowTitle(); }
         if (JustPressed(oDown, m_prevO)) { m_renderer->ToggleOctreeCulling(); UpdateWindowTitle(); }
         return;
@@ -131,12 +126,22 @@ void App::HandleSceneFeatureHotkeys()
 
     if (sceneMode == RenderingSystem::ParticleSceneMode)
     {
-        syncAllFeatureKeys();
+        SyncKeyState(nDown, m_prevN);
+        SyncKeyState(mDown, m_prevM);
+        SyncKeyState(tDown, m_prevT);
+        SyncKeyState(fDown, m_prevF);
+        SyncKeyState(oDown, m_prevO);
+        if (JustPressed(cDown, m_prevC))
+        {
+            if (m_renderer->DropParticleSceneCage())
+                UpdateWindowTitle();
+        }
         return;
     }
 
     SyncKeyState(fDown, m_prevF);
     SyncKeyState(oDown, m_prevO);
+    SyncKeyState(cDown, m_prevC);
 
     if (JustPressed(nDown, m_prevN))
     {
@@ -268,9 +273,18 @@ void App::UpdateWindowTitle()
     }
     else if (sceneMode == RenderingSystem::ParticleSceneMode)
     {
-        swprintf_s(
-            buf,
-            L"Lab-10  |  Zaya + sparks  |  GPU particles  |  Compute update + Append/Consume + GS billboards  |  [Tab] Scatter scene");
+        if (m_renderer->ParticleSceneCageVisible())
+        {
+            swprintf_s(
+                buf,
+                L"Lab 9-10  |  PCF + Shadow Map  |  Zaya + sparks  |  [Tab] Scatter scene");
+        }
+        else
+        {
+            swprintf_s(
+                buf,
+                L"Lab 9-10  |  PCF + Shadow Map  |  Zaya + sparks  |  [C] Save The World  |  [Tab] Scatter scene");
+        }
     }
     else if (sceneMode == RenderingSystem::SponzaSceneMode)
     {
