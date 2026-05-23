@@ -31,6 +31,7 @@ private:
     void UpdateWindowTitle();
     void HandleSceneHotkeys();
     void HandleSceneFeatureHotkeys();
+    void HandlePostProcessHotkeys();
     void UpdateCameraController(float dt);
     void ApplyHandRenderMode();
     void ApplySponzaRenderMode();
@@ -64,4 +65,6 @@ private:
     bool m_prevF = false;
     bool m_prevO = false;
     bool m_prevC = false;
+    bool m_prevP = false;
+    bool m_prevH = false;
 };

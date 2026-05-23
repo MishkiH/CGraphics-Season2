@@ -1,7 +1,9 @@
 #include "RenderingSystem.h"
 #include "DeferredScene.h"
 #include "ParticleScene.h"
+#include "PostProcessPass.h"
 #include "ScatterScene.h"
+#include "SceneRenderTarget.h"
 #include "AssetPath.h"
 #include "Dx12Helpers.h"
 #include "SceneProfiles.h"
@@ -19,6 +21,7 @@ using Microsoft::WRL::ComPtr;
 namespace
 {
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr D3D_FEATURE_LEVEL kMinFeatureLevel = D3D_FEATURE_LEVEL_12_0;
 
     bool IsHardwareAdapter(IDXGIAdapter1* adapter)
@@ -80,13 +83,14 @@ namespace
     bool InitializeDeferredScene(
         ID3D12Device* device,
         ID3D12CommandQueue* cmdQueue,
+        DXGI_FORMAT sceneColorFormat,
         uint32_t width,
         uint32_t height,
         std::unique_ptr<DeferredScene>& scene,
         const DeferredScene::SceneOptions& options)
     {
         scene = std::make_unique<DeferredScene>();
-        return scene->Initialize(device, cmdQueue, kBackBufferFormat, width, height, options);
+        return scene->Initialize(device, cmdQueue, sceneColorFormat, width, height, options);
     }
 }
 
@@ -122,9 +126,18 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     SetCamera(defaultEye, 0.f, 0.f);
     UpdateProjectionMatrix();
 
+    m_sceneColor = std::make_unique<SceneRenderTarget>();
+    if (!m_sceneColor->Initialize(m_device.Get(), width, height, kSceneColorFormat))
+        return false;
+
+    m_postProcess = std::make_unique<PostProcessPass>();
+    if (!m_postProcess->Initialize(m_device.Get(), kBackBufferFormat, width, height))
+        return false;
+
     if (!InitializeDeferredScene(
             m_device.Get(),
             m_cmdQueue.Get(),
+            kSceneColorFormat,
             width,
             height,
             m_handScene,
@@ -134,6 +147,7 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
     if (!InitializeDeferredScene(
             m_device.Get(),
             m_cmdQueue.Get(),
+            kSceneColorFormat,
             width,
             height,
             m_sponzaScene,
@@ -141,12 +155,12 @@ bool RenderingSystem::Initialize(HWND hwnd, uint32_t width, uint32_t height)
         return false;
 
     m_scatterScene = std::make_unique<ScatterScene>();
-    if (!m_scatterScene->Initialize(m_device.Get(), m_cmdQueue.Get(), kBackBufferFormat, width, height,
+    if (!m_scatterScene->Initialize(m_device.Get(), m_cmdQueue.Get(), kSceneColorFormat, width, height,
                      ResolveAsset("Meshes/shrek/shrek.obj"), ResolveAsset("Meshes/donkey/Donkey.obj")))
         return false;
 
     m_particleScene = std::make_unique<ParticleScene>();
-    if (!m_particleScene->Initialize(m_device.Get(), m_cmdQueue.Get(), kBackBufferFormat, width, height))
+    if (!m_particleScene->Initialize(m_device.Get(), m_cmdQueue.Get(), kSceneColorFormat, width, height))
         return false;
 
     m_initialized = true;
@@ -165,6 +179,8 @@ void RenderingSystem::Shutdown()
     if (m_sponzaScene) { m_sponzaScene->Shutdown(); m_sponzaScene.reset(); }
     if (m_scatterScene) { m_scatterScene->Shutdown(); m_scatterScene.reset(); }
     if (m_particleScene) { m_particleScene->Shutdown(); m_particleScene.reset(); }
+    if (m_postProcess) { m_postProcess->Shutdown(); m_postProcess.reset(); }
+    if (m_sceneColor) { m_sceneColor->Shutdown(); m_sceneColor.reset(); }
     if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
     m_cmdList.Reset();
     m_cmdAlloc.Reset();
@@ -186,11 +202,13 @@ void RenderingSystem::Draw(float dt)
     SyncDeferredSceneCameras();
 
     BeginFrame();
+    m_sceneColor->TransitionToRenderTarget(m_cmdList.Get());
+    const D3D12_CPU_DESCRIPTOR_HANDLE sceneRtv = m_sceneColor->GetRtv();
 
     if (m_sceneMode == ScatterSceneMode && m_scatterScene)
     {
         m_scatterScene->RecordCommands(m_cmdList.Get(), m_view, m_proj, m_eye,
-                                        CurrentBackBufferRTV(), m_viewport, m_scissorRect, dt);
+                                        sceneRtv, m_viewport, m_scissorRect, dt);
     }
     else if (m_sceneMode == ParticleSceneMode && m_particleScene)
     {
@@ -198,22 +216,33 @@ void RenderingSystem::Draw(float dt)
             m_cmdList.Get(),
             m_view,
             m_proj,
-            CurrentBackBufferRTV(),
+            sceneRtv,
             m_viewport,
             m_scissorRect,
             dt);
     }
     else if (m_sceneMode == SponzaSceneMode && m_sponzaScene)
     {
-        m_sponzaScene->RecordCommands(m_cmdList.Get(), CurrentBackBufferRTV(),
+        m_sponzaScene->RecordCommands(m_cmdList.Get(), sceneRtv,
                                        m_viewport, m_scissorRect, dt);
     }
     else
     {
         if (m_handScene)
-            m_handScene->RecordCommands(m_cmdList.Get(), CurrentBackBufferRTV(),
+            m_handScene->RecordCommands(m_cmdList.Get(), sceneRtv,
                                          m_viewport, m_scissorRect, dt);
     }
+
+    m_sceneColor->TransitionToPixelShaderResource(m_cmdList.Get());
+    const PostProcessPass::Settings postSettings{m_postProcessMode, m_colorMode};
+    m_postProcess->RecordCommands(
+        m_cmdList.Get(),
+        CurrentBackBufferRTV(),
+        m_viewport,
+        m_scissorRect,
+        m_sceneColor->GetSrvHeap(),
+        m_sceneColor->GetSrv(),
+        postSettings);
 
     EndFrame();
 }
@@ -235,6 +264,8 @@ void RenderingSystem::OnResize(uint32_t width, uint32_t height)
     m_scissorRect = {0, 0, (LONG)width, (LONG)height};
     UpdateProjectionMatrix();
 
+    if (m_sceneColor) m_sceneColor->Resize(m_device.Get(), width, height);
+    if (m_postProcess) m_postProcess->OnResize(width, height);
     if (m_handScene) m_handScene->OnResize(m_device.Get(), width, height);
     if (m_sponzaScene) m_sponzaScene->OnResize(m_device.Get(), width, height);
     if (m_scatterScene) m_scatterScene->OnResize(m_device.Get(), width, height);
@@ -323,6 +354,28 @@ bool RenderingSystem::DropParticleSceneCage()
 bool RenderingSystem::ParticleSceneCageVisible() const
 {
     return m_particleScene && m_particleScene->IsPrisonCageVisible();
+}
+
+void RenderingSystem::CyclePostProcessMode()
+{
+    const int next = (static_cast<int>(m_postProcessMode) + 1) % 4;
+    m_postProcessMode = static_cast<PostProcessPass::EffectMode>(next);
+}
+
+void RenderingSystem::CycleColorMode()
+{
+    const int next = (static_cast<int>(m_colorMode) + 1) % 4;
+    m_colorMode = static_cast<PostProcessPass::ColorMode>(next);
+}
+
+const wchar_t* RenderingSystem::PostProcessModeName() const
+{
+    return PostProcessPass::EffectModeName(m_postProcessMode);
+}
+
+const wchar_t* RenderingSystem::ColorModeName() const
+{
+    return PostProcessPass::ColorModeName(m_colorMode);
 }
 
 void RenderingSystem::SyncDeferredSceneCameras()

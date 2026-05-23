@@ -87,6 +87,7 @@ void App::Update(float dt)
 
     HandleSceneHotkeys();
     HandleSceneFeatureHotkeys();
+    HandlePostProcessHotkeys();
     UpdateCameraController(dt);
     m_renderer->SetCamera(m_camPos, m_camYaw, m_camPitch);
 
@@ -173,6 +174,24 @@ void App::HandleSceneFeatureHotkeys()
     {
         m_sponzaUvEffects = !m_sponzaUvEffects;
         ApplySponzaUvEffects();
+    }
+}
+
+void App::HandlePostProcessHotkeys()
+{
+    const bool pDown = m_input->IsKeyDown('P');
+    const bool hDown = m_input->IsKeyDown('H');
+
+    if (JustPressed(pDown, m_prevP))
+    {
+        m_renderer->CyclePostProcessMode();
+        UpdateWindowTitle();
+    }
+
+    if (JustPressed(hDown, m_prevH))
+    {
+        m_renderer->CycleColorMode();
+        UpdateWindowTitle();
     }
 }
 
@@ -263,10 +282,10 @@ void App::UpdateWindowTitle()
 {
     if (!m_window || !m_renderer) return;
     const int sceneMode = m_renderer->GetSceneMode();
-    wchar_t buf[256];
+    wchar_t sceneText[384];
     if (sceneMode == RenderingSystem::ScatterSceneMode)
     {
-        swprintf_s(buf, L"Lab-8  |  Scatter 1300  |  [F] Frustum: %-3s  [O] Octree: %-3s  |  Visible: %u/1300  |  [Tab] Hand scene",
+        swprintf_s(sceneText, L"Lab-8  |  Scatter 1300  |  [F] Frustum: %-3s  [O] Octree: %-3s  |  Visible: %u/1300  |  [Tab] Hand scene",
             m_renderer->FrustumCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->OctreeCullingEnabled() ? L"ON" : L"OFF",
             m_renderer->ScatterVisibleCount());
@@ -276,30 +295,38 @@ void App::UpdateWindowTitle()
         if (m_renderer->ParticleSceneCageVisible())
         {
             swprintf_s(
-                buf,
+                sceneText,
                 L"Lab 9-10  |  PCF + Shadow Map  |  Zaya + sparks  |  [Tab] Scatter scene");
         }
         else
         {
             swprintf_s(
-                buf,
+                sceneText,
                 L"Lab 9-10  |  PCF + Shadow Map  |  Zaya + sparks  |  [C] Save The World  |  [Tab] Scatter scene");
         }
     }
     else if (sceneMode == RenderingSystem::SponzaSceneMode)
     {
         swprintf_s(
-            buf,
+            sceneText,
             L"Lab-5/6  |  Sponza Deferred  |  [N] Normals: %-3s  [T] UV FX: %-3s  |  Dir + Point + Spot  |  [Tab] Lab-10",
             m_sponzaUseNormal ? L"ON" : L"OFF",
             m_renderer->SponzaUvEffectsEnabled() ? L"ON" : L"OFF");
     }
     else
     {
-        swprintf_s(buf, L"Lab-7  |  Hand + Water  |  Tessellation active  |  [N] Normals: %-3s  [M] Displacement: %-3s  |  [Tab] Sponza scene",
+        swprintf_s(sceneText, L"Lab-7  |  Hand + Water  |  Tessellation active  |  [N] Normals: %-3s  [M] Displacement: %-3s  |  [Tab] Sponza scene",
             m_handUseNormal ? L"ON" : L"OFF",
             m_handUseDisp ? L"ON" : L"OFF");
     }
+
+    wchar_t buf[512];
+    swprintf_s(
+        buf,
+        L"%s  |  PP: %s [P]  |  Color: %s [H]",
+        sceneText,
+        m_renderer->PostProcessModeName(),
+        m_renderer->ColorModeName());
     SetWindowTextW(m_window->GetHwnd(), buf);
 }
 

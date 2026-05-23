@@ -11,10 +11,12 @@
 #include <DirectXMath.h>
 #include <cstdint>
 #include <memory>
+#include "PostProcessPass.h"
 
 class DeferredScene;
 class ScatterScene;
 class ParticleScene;
+class SceneRenderTarget;
 
 // Owns device, swap chain, and back buffers. Delegates rendering to the active scene.
 class RenderingSystem
@@ -55,6 +57,10 @@ public:
     uint32_t ScatterVisibleCount() const;
     bool DropParticleSceneCage();
     bool ParticleSceneCageVisible() const;
+    void CyclePostProcessMode();
+    void CycleColorMode();
+    const wchar_t* PostProcessModeName() const;
+    const wchar_t* ColorModeName() const;
 
 private:
     void BeginFrame();
@@ -104,6 +110,11 @@ private:
     DirectX::XMFLOAT4X4 m_view{};
     DirectX::XMFLOAT4X4 m_proj{};
     DirectX::XMFLOAT3 m_eye{};
+
+    std::unique_ptr<SceneRenderTarget> m_sceneColor;
+    std::unique_ptr<PostProcessPass> m_postProcess;
+    PostProcessPass::EffectMode m_postProcessMode = PostProcessPass::EffectMode::Nothing;
+    PostProcessPass::ColorMode m_colorMode = PostProcessPass::ColorMode::HdrGamma;
 
     std::unique_ptr<DeferredScene> m_handScene;
     std::unique_ptr<DeferredScene> m_sponzaScene;

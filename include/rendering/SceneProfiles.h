@@ -93,7 +93,7 @@ namespace scene_profiles
         options.EnableNormalMapping = true;
         options.EnableDisplacement = false;
         options.SceneScale = 0.008f;
-        options.AmbientColor = {0.025f, 0.025f, 0.03f};
+        options.AmbientColor = {0.12f, 0.11f, 0.10f};
         options.SkyTopColor = {0.08f, 0.16f, 0.34f};
         options.ClearColor = {0.52f, 0.28f, 0.12f};
         options.UvTiling = {1.55f, 1.55f};

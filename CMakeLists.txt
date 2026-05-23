@@ -13,8 +13,10 @@ add_executable(dx12_renderer
     src/rendering/DeferredScene.cpp
     src/rendering/GBuffer.cpp
     src/rendering/ParticleScene.cpp
+    src/rendering/PostProcessPass.cpp
     src/rendering/RenderingSystem.cpp
     src/rendering/ScatterScene.cpp
+    src/rendering/SceneRenderTarget.cpp
     src/rendering/ShadowMap.cpp
     src/assets/ImageLoader.cpp
     src/assets/ObjLoader.cpp
